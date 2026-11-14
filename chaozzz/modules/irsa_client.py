@@ -454,7 +454,17 @@ def enrich_observations_with_sia2(observations: list[dict], coverage_rows: list[
 
 
 def query_archive(query: dict) -> dict:
-    validated = validate_query(**query)
+    # The Streamlit page validates the submitted form before calling this
+    # function. ``validate_query`` adds derived fields such as ``start_mjd``
+    # and ``end_mjd``; passing that result straight back through validation
+    # raises TypeError because those fields are not user inputs. Normalize
+    # both raw-form and already-validated dictionaries to the public query
+    # contract before validating here.
+    query_parameters = (
+        "ra_deg", "dec_deg", "radius_deg", "size_deg", "start_date",
+        "end_date", "band", "release", "survey", "max_rows",
+    )
+    validated = validate_query(**{key: query[key] for key in query_parameters})
     observations, tap_diag = query_tap_observations(
         validated["ra_deg"], validated["dec_deg"], validated["size_deg"],
         validated["start_mjd"], validated["end_mjd"], validated["band"],

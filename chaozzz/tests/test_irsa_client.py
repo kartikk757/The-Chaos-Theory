@@ -118,3 +118,24 @@ def test_sia2_enrichment_marks_unmatched_rows():
 def test_sia2_collection_alias_mapping():
     assert irsa_client._sia2_collections("all", "wide") == ["spherex_dr1", "spherex_qr3"]
     assert irsa_client._sia2_collections("qr3", "deep") == ["spherex_qr3_deep"]
+
+
+def test_query_archive_accepts_already_validated_query(monkeypatch):
+    validated = irsa_client.validate_query(**config.DEFAULT_QUERY)
+    monkeypatch.setattr(
+        irsa_client,
+        "query_tap_observations",
+        lambda *args, **kwargs: ([], {"utc": "2026-11-14T00:00:00Z"}),
+    )
+    monkeypatch.setattr(
+        irsa_client,
+        "query_sia2_coverage",
+        lambda *args, **kwargs: ([], {"status": "empty", "detail": "No coverage rows."}),
+    )
+    monkeypatch.setattr(irsa_client, "enrich_observations_with_sia2", lambda rows, *args: rows)
+
+    result = irsa_client.query_archive(validated)
+
+    assert result["validated_query"] == validated
+    assert result["observations"] == []
+    assert result["archive_status"]["status"] == "online"
