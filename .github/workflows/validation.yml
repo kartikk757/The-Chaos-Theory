@@ -1,0 +1,41 @@
+name: Scientific validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: chaozzz
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: chaozzz/requirements.txt
+
+      - name: Install application and test dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile application and tests
+        run: python -m compileall -q modules pages tests
+
+      - name: Run offline test suite
+        run: python -m pytest tests -q
+
+      - name: Verify checksums of cached real SPHEREx FITS products
+        run: python scripts/build_demo_bundle.py --check
