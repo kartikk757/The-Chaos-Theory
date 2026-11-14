@@ -198,8 +198,10 @@ def extract_aperture_spectrum(
             mask |= np.asarray(hit_planes[channel]) <= 0
         ap_sum = float(aperture_photometry(np.nan_to_num(image, nan=0.0), aperture, mask=mask, method="exact")["aperture_sum"][0])
         ann_sum = float(aperture_photometry(np.nan_to_num(image, nan=0.0), annulus, mask=mask, method="exact")["aperture_sum"][0])
-        ap_valid = float(aperture.area_overlap(image, mask=mask, method="exact"))
-        ann_valid = float(annulus.area_overlap(image, mask=mask, method="exact"))
+        # Photutils returns a one-element array for this single aperture
+        # position; sum it before converting the effective area to a scalar.
+        ap_valid = float(np.asarray(aperture.area_overlap(image, mask=mask, method="exact"), dtype=float).sum())
+        ann_valid = float(np.asarray(annulus.area_overlap(image, mask=mask, method="exact"), dtype=float).sum())
         if ann_valid <= 0 or ap_valid <= 0:
             bkg = float("nan")
             net = float("nan")
