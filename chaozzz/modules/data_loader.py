@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import time
 import uuid
 from datetime import datetime, timezone
@@ -365,10 +366,41 @@ def load_cached_real_bundle() -> tuple[list[dict], dict]:
         record = dict(entry)
         path = _resolve_path(record.get("cached_path", ""))
         if not path.exists():
-            raise DataLoadError(f"Cached real cutout is missing: {path}")
+            # Source repositories can omit the multi-megabyte FITS payloads
+            # while retaining their exact IRSA URLs and expected hashes. Fetch
+            # only that named product, validate it, and cache it at the
+            # manifest path; never replace it with a different observation.
+            download_record = dict(record)
+            download_record.pop("cached_path", None)
+            if not download_record.get("cutout_url") and not download_record.get("full_fits_url"):
+                raise DataLoadError(f"Cached real cutout is missing and has no IRSA URL: {path}")
+            try:
+                product = load_observation_product(download_record)
+            except Exception as exc:
+                raise DataLoadError(f"Cached real cutout is missing and its IRSA retrieval failed: {exc}") from exc
+            expected = str(record.get("derived_sha256") or "").lower()
+            source_path = Path(product.path)
+            source_sha256 = provenance.sha256_file(source_path)
+            if not expected or source_sha256 != expected:
+                raise DataLoadError(
+                    f"IRSA returned bytes that do not match the manifest checksum for {path.name}; "
+                    "the cached reference product was not replaced."
+                )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = path.with_name(path.name + ".partial")
+            try:
+                shutil.copyfile(source_path, temporary_path)
+                if provenance.sha256_file(temporary_path) != expected:
+                    raise DataLoadError(f"Copied real cutout checksum failed verification: {temporary_path.name}")
+                temporary_path.replace(path)
+            finally:
+                temporary_path.unlink(missing_ok=True)
         checksum = provenance.sha256_file(path)
         if checksum != record.get("derived_sha256"):
-            record.setdefault("warnings", []).append("Cached file checksum differs from manifest; reload from IRSA before scientific use.")
+            raise DataLoadError(
+                f"Cached real cutout checksum differs from the manifest: {path}. "
+                "Remove or re-download this file before scientific use."
+            )
         record["cached_path"] = str(path)
         source = str(record.get("coordinates_source") or "")
         record.setdefault(

@@ -15,13 +15,14 @@ Usage:
 from __future__ import annotations
 
 import sys
+from itertools import combinations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
-from modules import data_loader, irsa_client, pipeline, wcs_alignment  # noqa: E402
+from modules import data_loader, irsa_client, multi_epoch, pipeline, wcs_alignment  # noqa: E402
 
 VERIFIED_IDS = ("2026W20_2A_0464_1", "2026W26_1A_0178_1")
 
@@ -98,6 +99,86 @@ def main() -> int:
                   f"units {outcome['units']} · noise {outcome['difference'].global_noise:.4g}")
             print(f"   candidates: {outcome['candidate_summary']['total']} {outcome['candidate_summary']['counts']}")
             print("   (screening records only — this application makes no discovery claim)")
+
+    print("6. Loading independent dates for a real three-epoch analysis ...")
+    by_date: dict[str, dict] = {}
+    for observation in sorted(observations, key=lambda row: (row.get("mjd") is None, row.get("mjd") or 0.0)):
+        date_utc = str(observation.get("date_utc") or "")
+        if not date_utc or not observation.get("cutout_url"):
+            continue
+        by_date.setdefault(date_utc[:10], observation)
+    independent_records = list(by_date.values())[:10]
+    loaded_records: list[dict] = []
+    loaded_products: dict[str, object] = {}
+    retrieval_issues: list[str] = []
+    selected_triple: tuple[list[dict], dict[str, object]] | None = None
+    multi_cfg = dict(config.PROCESSING_DEFAULTS)
+    multi_cfg.update(multi_epoch.DEFAULT_MULTI_EPOCH_CONFIG)
+    for record in independent_records:
+        try:
+            product = data_loader.load_observation_product(record)
+        except Exception as error:
+            retrieval_issues.append(f"{record.get('obs_id')}: {error}")
+            continue
+        loaded_records.append(record)
+        loaded_products[str(record["id"])] = product
+        if len(loaded_records) < 3:
+            continue
+        matrix = multi_epoch.compatibility_matrix(loaded_records, loaded_products, multi_cfg)
+        by_pair = {
+            frozenset((str(row["observation_id_1"]), str(row["observation_id_2"]))): row
+            for row in matrix
+        }
+        for triple in combinations(loaded_records, 3):
+            ordered = sorted(triple, key=lambda row: (row.get("mjd") is None, row.get("mjd") or 0.0))
+            times = [float(row["mjd"]) for row in ordered if row.get("mjd") is not None]
+            if len(times) != 3 or min(times[1] - times[0], times[2] - times[1]) < 1.0:
+                continue
+            pair_checks = [
+                by_pair.get(frozenset((str(left["id"]), str(right["id"]))))
+                for left, right in combinations(ordered, 2)
+            ]
+            # The acceptance example is deliberately stricter than a positional
+            # association: all three epochs must share a detector, compatible
+            # WCS-WAVE sampling, temporal separation, and spatial coverage.
+            if all(row and row["photometric_compatible"] for row in pair_checks):
+                selected_triple = (
+                    ordered,
+                    {str(row["id"]): loaded_products[str(row["id"])] for row in ordered},
+                )
+                break
+        if selected_triple:
+            break
+
+    if selected_triple is None:
+        failures.append(
+            "no three independent dates passed every pairwise detector, WCS-WAVE, temporal, and spatial compatibility check "
+            f"after loading {len(loaded_records)} product(s)"
+        )
+    else:
+        triple_records, triple_products = selected_triple
+        for record in triple_records:
+            product = triple_products[str(record["id"])]
+            print(f"   {record['date_utc']} | {record.get('obs_id')} | {record.get('band')} | sha256 {product.sha256}")
+        analysis = multi_epoch.analyse_multi_epoch(triple_records, triple_products, multi_cfg)
+        summary = analysis.get("summary", {})
+        if analysis.get("status") != "ok" or summary.get("observations") != 3:
+            failures.append(f"three-epoch analysis did not complete: {analysis.get('error', analysis.get('status'))}")
+        elif summary.get("detections", 0) == 0:
+            failures.append("three-epoch analysis completed but detected no sources in the selected real products")
+        else:
+            print(
+                f"   run {analysis['run_id']} | compatibility pairs {len(analysis['compatibility_matrix'])} | "
+                f"detections {summary['detections']} | tracks {summary['tracks']} | "
+                f"potential moving-source leads {summary['potential_moving_source_tracks']}"
+            )
+            print("   motion remains an investigative lead; the script makes no object or discovery claim")
+            print("   all selected epoch pairs passed detector, WCS-WAVE, temporal, and spatial compatibility")
+
+    if retrieval_issues:
+        print(f"   {len(retrieval_issues)} additional archive product(s) could not be loaded during epoch selection")
+        for issue in retrieval_issues:
+            print(f"   - {issue}")
 
     print("\nRESULT:", "PASS" if not failures else "FAIL")
     for failure in failures:

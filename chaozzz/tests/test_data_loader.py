@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from types import SimpleNamespace
 
 import config
 from modules import data_loader, fits_processor, provenance
@@ -103,6 +104,66 @@ def test_wavelength_sampled_at_cutout_centre_not_archive_footprint(demo_products
     assert product.metadata["wavelength_sample_pixel"] == [47.5, 47.5]
     assert product.is_demo is True
     assert product.is_real_spherex is False
+
+
+def test_missing_real_bundle_file_is_retrieved_and_verified(monkeypatch, tmp_path, toy_fits):
+    expected_sha256 = provenance.sha256_file(toy_fits)
+    cached_path = tmp_path / "real" / "verified.fits"
+    entry = {
+        "id": "SPX-TEST",
+        "cached_path": str(cached_path),
+        "cutout_url": "https://irsa.ipac.caltech.edu/ibe/data/spherex/test.fits?center=10,20d&size=0.1",
+        "derived_sha256": expected_sha256,
+        "data_mode": config.DATA_MODES["LIVE"],
+        "ra_deg": 10.0,
+        "dec_deg": 20.0,
+        "coordinates_source": "requested field centre",
+        "coordinates_role": "requested_field_center",
+        "metadata": {},
+        "warnings": [],
+    }
+    seen = {}
+    monkeypatch.setattr(data_loader.provenance, "read_json", lambda _path: {"observations": [entry]})
+
+    def fake_load(record):
+        seen.update(record)
+        return SimpleNamespace(path=str(toy_fits), sha256=expected_sha256)
+
+    monkeypatch.setattr(data_loader, "load_observation_product", fake_load)
+
+    records, _manifest = data_loader.load_cached_real_bundle()
+
+    assert "cached_path" not in seen
+    assert cached_path.exists()
+    assert provenance.sha256_file(cached_path) == expected_sha256
+    assert records[0]["data_mode"] == config.DATA_MODES["CACHED_REAL"]
+    assert records[0]["is_real_spherex"] is True
+
+
+def test_missing_real_bundle_rejects_changed_archive_bytes(monkeypatch, tmp_path, toy_fits):
+    cached_path = tmp_path / "real" / "verified.fits"
+    entry = {
+        "id": "SPX-TEST",
+        "cached_path": str(cached_path),
+        "cutout_url": "https://irsa.ipac.caltech.edu/ibe/data/spherex/test.fits?center=10,20d&size=0.1",
+        "derived_sha256": "0" * 64,
+        "data_mode": config.DATA_MODES["LIVE"],
+        "ra_deg": 10.0,
+        "dec_deg": 20.0,
+        "coordinates_source": "requested field centre",
+        "coordinates_role": "requested_field_center",
+        "metadata": {},
+    }
+    monkeypatch.setattr(data_loader.provenance, "read_json", lambda _path: {"observations": [entry]})
+    monkeypatch.setattr(
+        data_loader,
+        "load_observation_product",
+        lambda _record: SimpleNamespace(path=str(toy_fits), sha256=provenance.sha256_file(toy_fits)),
+    )
+
+    with pytest.raises(data_loader.DataLoadError, match="do not match the manifest checksum"):
+        data_loader.load_cached_real_bundle()
+    assert not cached_path.exists()
 
 
 def test_parent_footprint_and_requested_field_are_separate_from_cutout_wcs(toy_fits):
