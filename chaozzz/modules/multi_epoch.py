@@ -465,7 +465,7 @@ def _track_report(track_number: int, track: dict, searchable_epochs: int, cfg: d
     elif len(detections) < int(cfg.get("multi_epoch_min_epochs_for_motion", 3)):
         if len(detections) == 2:
             flags.append("2-EPOCH-ONLY")
-            evidence.append("Two positions define only a displacement; they cannot establish a fitted motion track.")
+            evidence.append("2-EPOCH-ONLY: two positions define only a displacement; they cannot establish a fitted motion track.")
         classification = "insufficient_evidence"
     elif motion.get("status") != "ok":
         classification = "insufficient_evidence"

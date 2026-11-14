@@ -195,5 +195,5 @@ def compare_with_photutils(sdt_sources: list[dict], photutils_detections: list[d
         "photutils_only_count": max(0, len(photutils_detections) - len(matches)),
         "sdt_only_count": max(0, len(available) - len(matches)),
         "matches": matches,
-        "interpretation": "Spatial agreement diagnostic only; the two extraction paths use different algorithms and neither count is a calibrated completeness estimate.",
+        "interpretation": "Spatial agreement diagnostic only; these extraction paths differ, and their agreement count is not a calibrated completeness estimate.",
     }

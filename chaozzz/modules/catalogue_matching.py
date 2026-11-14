@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 import astropy.units as u
+import numpy as np
 import streamlit as st
 from astropy.coordinates import SkyCoord
 

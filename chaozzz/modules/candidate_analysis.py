@@ -98,8 +98,10 @@ def _aperture_flux(image: np.ndarray, x: float, y: float, cfg: dict) -> tuple[fl
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         phot = aperture_photometry(data, [aperture, annulus], mask=mask, method="exact")
-        annulus_area = float(annulus.area_overlap(data, mask=mask, method="exact"))
-        aperture_area = float(aperture.area_overlap(data, mask=mask, method="exact"))
+        # Photutils returns one overlap-area value per aperture position, even
+        # when this helper supplies only a single position.
+        annulus_area = float(np.asarray(annulus.area_overlap(data, mask=mask, method="exact"), dtype=float).sum())
+        aperture_area = float(np.asarray(aperture.area_overlap(data, mask=mask, method="exact"), dtype=float).sum())
     raw_sum = float(phot["aperture_sum_0"][0])
     annulus_sum = float(phot["aperture_sum_1"][0])
     local_background = annulus_sum / annulus_area if annulus_area > 0 else 0.0
