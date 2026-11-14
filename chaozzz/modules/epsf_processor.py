@@ -239,7 +239,7 @@ def fit_source(
         or not np.isfinite(max_position_shift_px)
         or max_position_shift_px <= 0
     ):
-        return {"status": "invalid_configuration", "detail": "The PSF fit window must be an odd size of at least 5 pixels."}
+        return {"status": "invalid_configuration", "detail": "Use an odd PSF fit window of at least 5 pixels, a non-negative background inner radius below the outer radius, and a positive position bound."}
     try:
         info = epsf_for_position(product, x0, y0)
     except EPSFError as exc:
@@ -304,8 +304,8 @@ def fit_source(
     raw_model = np.asarray(info.get("epsf_model_raw"), dtype=float)
     oversampling_x = int(info.get("oversampling_x") or 0)
     oversampling_y = int(info.get("oversampling_y") or 0)
-    if raw_model.ndim != 2 or min(raw_model.shape) < 4 or not np.all(np.isfinite(raw_model)) or np.any(raw_model < 0):
-        return {"status": "invalid_epsf", "detail": "The selected ePSF model must be a finite, non-negative two-dimensional array."}
+    if raw_model.ndim != 2 or min(raw_model.shape) < 4 or not np.all(np.isfinite(raw_model)):
+        return {"status": "invalid_epsf", "detail": "The selected ePSF model must be a finite two-dimensional array."}
     if oversampling_x <= 0 or oversampling_y <= 0 or float(np.sum(raw_model)) <= 0:
         return {"status": "invalid_epsf", "detail": "The selected ePSF model has invalid oversampling or normalization metadata."}
     expected_oversampled_sum = float(oversampling_x * oversampling_y)
@@ -354,6 +354,11 @@ def fit_source(
             )
             conversion = None
             flux_unit = f"{product.bunit or 'image unit'} ePSF amplitude (scale unvalidated)"
+        negative_sample_count = int(np.count_nonzero(raw_model < 0))
+        if negative_sample_count:
+            warnings_out.append(
+                f"The empirical ePSF contains {negative_sample_count} negative samples; they are retained as supplied and are not clipped."
+            )
         flux_out = fitted_flux * conversion if conversion is not None else fitted_flux
         error_out = fitted_error * conversion if conversion is not None and fitted_error is not None else fitted_error
         if variance is not None:
@@ -383,6 +388,7 @@ def fit_source(
             "epsf_zone_id": list(info["zone_id"]),
             "epsf_oversampling_xy": [oversampling_x, oversampling_y],
             "epsf_sum_finite": raw_sum,
+            "epsf_negative_sample_count": negative_sample_count,
             "epsf_expected_oversampled_sum": expected_oversampled_sum,
             "epsf_normalization_ratio": normalization_ratio,
             "epsf_zone_wavelength_um": info.get("epsf_center_wavelength_um"),

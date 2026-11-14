@@ -8,6 +8,7 @@ separate from the Photutils residual detector.
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import shutil
 import subprocess
 import tempfile
@@ -17,8 +18,26 @@ from typing import Any
 import numpy as np
 from astropy.io import fits
 from astropy.table import Table
+from astropy.coordinates import SkyCoord
+from astropy.time import Time
 
 from modules.models import FitsProduct
+
+
+# IRSA's Source Discovery Tool tutorial documents these DR1 calibration paths
+# as of November 2026. The collection is release-specific and must be revisited
+# when IRSA publishes a newer solid-angle pixel map collection.
+SDT_SAPM_COLLECTION = "cal-sapm-v3-2026-191"
+SDT_SAPM_S3 = tuple(
+    f"nasa-irsa-spherex/dr1/solid_angle_pixel_map/{SDT_SAPM_COLLECTION}/{detector}/"
+    f"solid_angle_pixel_map_D{detector}_spx_{SDT_SAPM_COLLECTION}.fits"
+    for detector in range(1, 7)
+)
+SDT_BAD_FLAGS = (
+    "TRANSIENT", "OVERFLOW", "SUR_ERROR", "NONFUNC", "DICHROIC", "MISSING_DATA",
+    "HOT", "COLD", "NONLINEAR", "CROSSTALK", "GHOST", "GHOST_FPA", "GHOST_EXT",
+    "STREAK", "PERSIST", "BLOOM", "SNOWBALL", "HALO", "SATELLITE_HALO",
+)
 
 
 class SDTUnavailable(RuntimeError):
@@ -37,6 +56,23 @@ def availability() -> dict[str, Any]:
             if package and executable
             else "Optional path unavailable: install the IRSA spherex_source_discovery_tool package and SExtractor; the built-in Photutils path remains active."
         ),
+        "source": "IRSA SPHEREx Source Discovery Tool tutorial",
+    }
+
+
+def spectrum_availability() -> dict[str, Any]:
+    """Report availability of the optional SDT aperture-photometry helpers."""
+    try:
+        from spherex_source_discovery_tool import aperture_photometry as _aperture_photometry  # noqa: F401
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "detail": f"Optional IRSA SDT aperture-photometry module is unavailable: {exc}",
+            "source": "IRSA SPHEREx Source Discovery Tool tutorial",
+        }
+    return {
+        "status": "available",
+        "detail": "IRSA SDT aperture-photometry components are available; calibration maps are checked when extraction runs.",
         "source": "IRSA SPHEREx Source Discovery Tool tutorial",
     }
 
@@ -65,6 +101,14 @@ def _find_column(row: dict, *names: str, default=None):
         if key is not None:
             return row[key]
     return default
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def extract_sources(product: FitsProduct, timeout_seconds: int = 45) -> dict[str, Any]:
@@ -196,4 +240,228 @@ def compare_with_photutils(sdt_sources: list[dict], photutils_detections: list[d
         "sdt_only_count": max(0, len(available) - len(matches)),
         "matches": matches,
         "interpretation": "Spatial agreement diagnostic only; these extraction paths differ, and their agreement count is not a calibrated completeness estimate.",
+    }
+
+
+def extract_epoch_spectrum(
+    products: list[FitsProduct],
+    source_positions: list[tuple[float, float]],
+    *,
+    source_id: str,
+    aperture_radius_px: float = 3.0,
+    sapm_s3: tuple[str, ...] | list[str] = SDT_SAPM_S3,
+) -> dict[str, Any]:
+    """Extract official SDT-style aperture measurements from selected epochs.
+
+    This is intentionally for a small, already validated set of loaded products.
+    Each observation uses its own sky coordinate so candidate motion is not
+    erased by forcing a single stationary position across epochs. The returned
+    wavelength samples remain time-stamped measurements, not a variability-
+    corrected or continuous spectrum.
+    """
+    try:
+        aperture_radius_px = float(aperture_radius_px)
+    except (TypeError, ValueError, OverflowError):
+        return {"status": "invalid_input", "detail": "The aperture radius must be numeric."}
+    if not products or len(products) != len(source_positions):
+        return {"status": "invalid_input", "detail": "Provide at least one validated product and exactly one ICRS position per product."}
+    if not np.isfinite(aperture_radius_px) or aperture_radius_px <= 0 or aperture_radius_px > 5:
+        return {"status": "invalid_input", "detail": "The SDT aperture radius must be greater than zero and no larger than 5 pixels."}
+    for position in source_positions:
+        try:
+            ra_deg, dec_deg = float(position[0]), float(position[1])
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return {"status": "invalid_input", "detail": "Every epoch requires a finite two-value ICRS position."}
+        if not np.isfinite(ra_deg) or not np.isfinite(dec_deg) or not 0.0 <= ra_deg < 360.0 or not -90.0 <= dec_deg <= 90.0:
+            return {"status": "invalid_input", "detail": "Every epoch requires RA in [0, 360) and Dec in [-90, 90] degrees."}
+
+    try:
+        from astropy import units as u
+        from astropy.wcs import WCS
+        from photutils.aperture import CircularAperture, aperture_photometry
+        from spherex_source_discovery_tool.aperture_photometry import (
+            extract_dqf,
+            extract_photometry,
+            fetch_sapm,
+            get_AB,
+            sa_mjy_scale_map,
+        )
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "detail": f"The optional IRSA SPHEREx Source Discovery Tool photometry components are unavailable: {exc}",
+            "measurements": [],
+        }
+
+    try:
+        # The official helper downloads the six detector maps once; its
+        # interpolation routines are then reused for every selected epoch.
+        sapm_maps, sapm_interpolators = fetch_sapm(list(sapm_s3))
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "detail": f"Could not load the official SPHEREx solid-angle pixel maps: {exc}",
+            "measurements": [],
+            "sapm_collection": SDT_SAPM_COLLECTION if tuple(sapm_s3) == SDT_SAPM_S3 else "caller-supplied",
+        }
+
+    output: list[dict[str, Any]] = []
+    for product, position in zip(products, source_positions):
+        measurement: dict[str, Any] = {
+            "observation_id": str(product.product_id),
+            "product_sha256": str(product.sha256),
+            "source_position_icrs_deg": list(position),
+        }
+        try:
+            if not bool(getattr(product, "is_real_spherex", False)):
+                raise ValueError("SDT calibration is enabled only for validated real SPHEREx archive products.")
+            ra_deg, dec_deg = float(position[0]), float(position[1])
+            if not np.isfinite(ra_deg) or not np.isfinite(dec_deg) or not -90.0 <= dec_deg <= 90.0:
+                raise ValueError("A finite ICRS coordinate with declination in [-90, 90] degrees is required.")
+            path = Path(product.path)
+            if not path.is_file():
+                raise ValueError("The validated FITS product is no longer available on disk.")
+            digest = _sha256_file(path)
+            if product.sha256 and digest.lower() != str(product.sha256).lower():
+                raise ValueError("The cached FITS checksum changed after the product was validated.")
+
+            with fits.open(path, memmap=False) as hdul:
+                image_hdu = hdul["IMAGE"] if "IMAGE" in hdul else None
+                flags_hdu = hdul["FLAGS"] if "FLAGS" in hdul else None
+                variance_hdu = hdul["VARIANCE"] if "VARIANCE" in hdul else None
+                if image_hdu is None or flags_hdu is None or variance_hdu is None or "WCS-WAVE" not in hdul:
+                    raise ValueError("The product must contain IMAGE, FLAGS, VARIANCE, and WCS-WAVE extensions.")
+                image = np.asarray(image_hdu.data, dtype=float)
+                flags = np.asarray(flags_hdu.data)
+                variance = np.asarray(variance_hdu.data, dtype=float)
+                if image.ndim != 2 or flags.shape != image.shape or variance.shape != image.shape:
+                    raise ValueError("IMAGE, FLAGS, and VARIANCE must have matching two-dimensional shapes.")
+                image_header = image_hdu.header
+                image_wcs = WCS(image_header)
+                spectral_wcs = WCS(image_header, fobj=hdul, key="W")
+                spectral_wcs.sip = None
+                coordinate = SkyCoord(ra_deg, dec_deg, unit="deg", frame="icrs")
+                x_pixel, y_pixel = image_wcs.world_to_pixel(coordinate)
+                if not np.isfinite(x_pixel) or not np.isfinite(y_pixel):
+                    raise ValueError("The selected sky coordinate does not map to finite image pixels.")
+                # The official SDT photometer uses a 7-to-16 pixel background
+                # annulus; require its full support to lie inside the cutout.
+                margin = 17.0
+                if x_pixel < margin or y_pixel < margin or x_pixel > image.shape[1] - 1 - margin or y_pixel > image.shape[0] - 1 - margin:
+                    raise ValueError("The selected position is too close to the cutout edge for the SDT 7-to-16 pixel background annulus.")
+
+                spectral_world = spectral_wcs.pixel_to_world(x_pixel, y_pixel)
+                wavelength = float(spectral_world[0].to_value(u.um))
+                bandwidth = float(spectral_world[1].to_value(u.um))
+                if not np.isfinite(wavelength) or not np.isfinite(bandwidth) or bandwidth <= 0:
+                    raise ValueError("WCS-WAVE did not provide finite wavelength and bandwidth values.")
+                mjd = float(image_header["MJD-OBS"])
+                date_utc = Time(mjd, format="mjd", scale="utc").isot
+                detector = int(image_header.get("DETECTOR", 0))
+                if detector < 1 or detector > 6:
+                    raise ValueError(f"FITS IMAGE detector value {detector} is outside the SPHEREx D1-D6 range.")
+                image_unit = u.Unit(image_header.get("BUNIT", ""))
+                if image_unit == u.MJy / u.sr:
+                    scale_map = sa_mjy_scale_map(
+                        band=detector,
+                        ny=image.shape[0],
+                        nx=image.shape[1],
+                        SA_MAPS=sapm_maps,
+                        SA_MAPS_interp=sapm_interpolators,
+                    )
+                    image_for_phot = image * scale_map  # mJy per pixel
+                    variance_for_phot = variance * scale_map**2  # mJy squared per pixel
+                    flux_unit = "mJy"
+                    abmag_scale = 1e-3  # mJy to Jy
+                else:
+                    image_for_phot = image
+                    variance_for_phot = variance
+                    flux_unit = str(image_unit)
+                    abmag_scale = None
+
+                flag_definitions: dict[str, int] = {}
+                for key in flags_hdu.header:
+                    try:
+                        if key.startswith("MSKN"):
+                            flag_definitions[str(flags_hdu.header[key]).upper()] = int(key[4:])
+                        elif key.startswith("MP_"):
+                            flag_definitions[key[3:].upper()] = int(flags_hdu.header[key])
+                    except (TypeError, ValueError):
+                        continue
+                severe_masks = {
+                    name: (flags & (1 << bit)) > 0
+                    for name, bit in flag_definitions.items()
+                    if name in SDT_BAD_FLAGS
+                }
+                bad_pixel_mask = np.logical_or.reduce(list(severe_masks.values())) if severe_masks else np.zeros(image.shape, dtype=bool)
+                bad_pixel_mask |= ~np.isfinite(image_for_phot) | ~np.isfinite(variance_for_phot) | (variance_for_phot < 0)
+                image_masked = np.where(bad_pixel_mask, np.nan, image_for_phot)
+                position_xy = [(float(x_pixel), float(y_pixel))]
+                radius_list = [aperture_radius_px]
+                table = extract_photometry(
+                    image_masked,
+                    position_xy,
+                    radius_list,
+                    annulus_rad_in=7,
+                    annulus_rad_out=16,
+                    mask=bad_pixel_mask,
+                )
+                flux_key = f"aper_sum_bkgsub_r{aperture_radius_px:.1f}"
+                flux_value = float(table[flux_key][0])
+                aperture = CircularAperture(position_xy, r=aperture_radius_px)
+                variance_result = aperture_photometry(
+                    variance_for_phot,
+                    aperture,
+                    mask=bad_pixel_mask,
+                    method="subpixel",
+                    subpixels=5,
+                )
+                variance_sum = float(variance_result["aperture_sum"][0])
+                if not np.isfinite(flux_value) or not np.isfinite(variance_sum) or variance_sum < 0:
+                    raise ValueError("A finite aperture flux and non-negative aperture variance are required.")
+                if abmag_scale is not None:
+                    ab_value = float(get_AB(abmag_scale * flux_value))
+                    ab_magnitude = ab_value if np.isfinite(ab_value) else None
+                else:
+                    ab_magnitude = None
+                dqf = {
+                    name: extract_dqf(flag_mask, position_xy, radius_list)
+                    for name, flag_mask in severe_masks.items()
+                }
+                bad_pixel_count = 0.0
+                for name in severe_masks:
+                    bad_pixel_count += float(dqf[name][f"aperture_sum_r{aperture_radius_px:.1f}"][0])
+                measurement.update({
+                    "status": "ok",
+                    "date_utc": date_utc,
+                    "mjd_utc": mjd,
+                    "detector": detector,
+                    "product_version": str(hdul[0].header.get("VERSION", "unknown")),
+                    "wavelength_um": wavelength,
+                    "bandwidth_um": bandwidth,
+                    "flux": flux_value,
+                    "flux_unit": flux_unit,
+                    "flux_error": float(np.sqrt(max(variance_sum, 0.0))),
+                    "variance_sum": variance_sum,
+                    "ab_magnitude": ab_magnitude,
+                    "bad_flagged_aperture_pixels": bad_pixel_count,
+                    "known_bad_flags_found": sorted(severe_masks),
+                    "x_pixel": float(x_pixel),
+                    "y_pixel": float(y_pixel),
+                })
+        except Exception as exc:
+            measurement.update({"status": "failed", "detail": str(exc)})
+        output.append(measurement)
+
+    successful = [row for row in output if row.get("status") == "ok"]
+    return {
+        "status": "ok" if successful and len(successful) == len(output) else "partial" if successful else "failed",
+        "source_id": str(source_id),
+        "aperture_radius_px": aperture_radius_px,
+        "measurements": sorted(successful, key=lambda row: (row["wavelength_um"], row["mjd_utc"])) + [row for row in output if row.get("status") != "ok"],
+        "sapm_collection": SDT_SAPM_COLLECTION if tuple(sapm_s3) == SDT_SAPM_S3 else "caller-supplied",
+        "sapm_sources": list(sapm_s3),
+        "method": "IRSA SPHEREx Source Discovery Tool extract_photometry, extract_dqf, sa_mjy_scale_map, and get_AB components",
+        "limitation": "Sparse, time-stamped aperture measurements from the selected products. They are not a variability-corrected continuous spectrum; flux errors omit background-estimation and inter-pixel covariance terms.",
+        "reference": "https://caltech-ipac.github.io/irsa-tutorials/spherex-source-discovery-tool-demo/",
     }

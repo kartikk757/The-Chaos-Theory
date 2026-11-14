@@ -10,7 +10,7 @@ from astropy.coordinates import SkyCoord
 
 import config
 from components import candidate_table, image_viewer, navbar, sidebar, status_panel
-from modules import epsf_processor, jpl_crossmatch, mosaic_cube, pipeline, provenance, state, visualization
+from modules import epsf_processor, jpl_crossmatch, mosaic_cube, pipeline, provenance, spherex_sdt_adapter, state, visualization
 
 sidebar.bootstrap_page(
     "Candidate Investigation",
@@ -56,11 +56,47 @@ def _record_epsf_provenance(comparison: dict, candidate_id: str, result: dict) -
         path = config.OUTPUT_DIR / "runs" / f"{run_id}.json"
         record = provenance.read_json(path) if path.exists() else {"run_id": run_id}
     measurements = record.setdefault("ancillary_measurements", {})
-    measurements["SPHEREx ePSF photometry"] = {
+    key = "SPHEREx ePSF photometry"
+    bucket = measurements.setdefault(key, {})
+    if not isinstance(bucket, dict) or not isinstance(bucket.get("by_candidate"), dict):
+        previous = bucket if isinstance(bucket, dict) and bucket.get("candidate_id") else None
+        bucket = {"by_candidate": {}}
+        if previous:
+            bucket["by_candidate"][str(previous["candidate_id"])] = previous
+        measurements[key] = bucket
+    bucket["by_candidate"][str(candidate_id)] = {
         "candidate_id": candidate_id,
         "checked_utc": provenance.utc_now(),
         "result": result,
         "scope": "Supplemental isolated-source fit to the selected candidate; not used to change its classification or to claim a sensitivity improvement.",
+    }
+    provenance.write_json(config.OUTPUT_DIR / "runs" / f"{run_id}.json", record)
+    comparison["provenance"] = record
+    state.set_value("comparison", comparison)
+
+
+def _record_sdt_provenance(comparison: dict, candidate_id: str, result: dict) -> None:
+    """Preserve selected-epoch SDT aperture measurements in run provenance."""
+    run_id = comparison.get("run_id")
+    if not run_id or run_id == "no-two-epoch-run":
+        return
+    record = comparison.get("provenance")
+    if not isinstance(record, dict) or record.get("run_id") != run_id:
+        path = config.OUTPUT_DIR / "runs" / f"{run_id}.json"
+        record = provenance.read_json(path) if path.exists() else {"run_id": run_id}
+    measurements = record.setdefault("ancillary_measurements", {})
+    key = "SPHEREx SDT spectral aperture extraction"
+    bucket = measurements.setdefault(key, {})
+    if not isinstance(bucket, dict) or not isinstance(bucket.get("by_candidate"), dict):
+        previous = bucket if isinstance(bucket, dict) and bucket.get("candidate_id") else None
+        bucket = {"by_candidate": {}}
+        if previous:
+            bucket["by_candidate"][str(previous["candidate_id"])] = previous
+        measurements[key] = bucket
+    bucket["by_candidate"][str(candidate_id)] = {
+        "candidate_id": candidate_id,
+        "checked_utc": provenance.utc_now(),
+        "result": result,
     }
     provenance.write_json(config.OUTPUT_DIR / "runs" / f"{run_id}.json", record)
     comparison["provenance"] = record
@@ -282,6 +318,96 @@ else:
         st.caption(spectrum["extraction"])
         with st.expander("Candidate spectrum provenance and limitations", expanded=False):
             st.json({key: value for key, value in spectrum.items() if key not in ("wavelength_um", "flux", "background_per_pixel", "flux_error", "valid_fraction")})
+
+with st.expander("Optional IRSA Source Discovery Tool spectral photometry", expanded=False):
+    sdt_spectrum_state = spherex_sdt_adapter.spectrum_availability()
+    if sdt_spectrum_state["status"] != "available":
+        st.info(sdt_spectrum_state["detail"] + " The cube quick-look path above remains independent.")
+    elif aligned is None or product1 is None or product2 is None:
+        st.info("Load a compatible pair before extracting SDT measurements from selected epochs.")
+    else:
+        st.caption(
+            "This uses the official SDT aperture, background-annulus, solid-angle-map, flag and AB-magnitude components on the exact loaded FITS products. "
+            "Each epoch uses its own candidate position. Results are sparse, time-stamped flux measurements, not a variability-corrected continuous spectrum."
+        )
+        sdt_radius = st.selectbox("SDT aperture radius (pixels)", [3.0, 4.0, 5.0], index=0, key="candidate_sdt_aperture")
+        if st.button("EXTRACT SDT SPECTRAL PHOTOMETRY FOR BOTH EPOCHS", key=f"extract_sdt_{candidate.candidate_id}"):
+            products = [product1, product2]
+            positions = []
+            for index, product in enumerate(products, start=1):
+                epoch = candidate.metadata.get(f"epoch{index}", {})
+                ra_value = epoch.get("ra_deg", candidate.ra_deg)
+                dec_value = epoch.get("dec_deg", candidate.dec_deg)
+                try:
+                    if product.wcs is None or not np.isfinite(float(ra_value)) or not np.isfinite(float(dec_value)):
+                        raise ValueError("A finite ICRS candidate coordinate and product WCS are required.")
+                    positions.append((float(ra_value), float(dec_value)))
+                except Exception as exc:
+                    positions.append((float("nan"), float("nan")))
+            spectrum = spherex_sdt_adapter.extract_epoch_spectrum(
+                products,
+                positions,
+                source_id=candidate.candidate_id,
+                aperture_radius_px=float(sdt_radius),
+            )
+            candidate.metadata["sdt_spectral_photometry"] = spectrum
+            comparison["candidates"] = candidates
+            state.set_value("comparison", comparison)
+            _record_sdt_provenance(comparison, candidate.candidate_id, spectrum)
+
+        sdt_spectrum = candidate.metadata.get("sdt_spectral_photometry") or {}
+        if sdt_spectrum:
+            if sdt_spectrum.get("status") not in {"ok", "partial"}:
+                st.warning(sdt_spectrum.get("detail", "The SDT extraction did not produce measurements."))
+            measurements = sdt_spectrum.get("measurements", [])
+            valid_measurements = [row for row in measurements if row.get("status") == "ok"]
+            if valid_measurements:
+                st.dataframe([
+                    {
+                        "observation": row.get("observation_id"),
+                        "UTC date": row.get("date_utc"),
+                        "wavelength (µm)": row.get("wavelength_um"),
+                        "bandwidth (µm)": row.get("bandwidth_um"),
+                        "flux": f"{row.get('flux'):.5g} {row.get('flux_unit')}",
+                        "uncertainty": f"{row.get('flux_error'):.4g} {row.get('flux_unit')}",
+                        "AB magnitude": row.get("ab_magnitude"),
+                        "flagged aperture pixels": row.get("bad_flagged_aperture_pixels"),
+                    }
+                    for row in valid_measurements
+                ], use_container_width=True, hide_index=True)
+                units = {row.get("flux_unit") for row in valid_measurements}
+                if len(valid_measurements) >= 2 and len(units) == 1:
+                    ordered = sorted(valid_measurements, key=lambda row: (row["wavelength_um"], row["mjd_utc"]))
+                    spectrum_figure = go.Figure(go.Scatter(
+                        x=[row["wavelength_um"] for row in ordered],
+                        y=[row["flux"] for row in ordered],
+                        error_y={"type": "data", "array": [row["flux_error"] for row in ordered], "visible": True},
+                        customdata=[[row["date_utc"], row["observation_id"]] for row in ordered],
+                        hovertemplate="%{x:.4f} µm<br>%{y:.5g} " + next(iter(units)) + "<br>%{customdata[0]}<br>%{customdata[1]}<extra></extra>",
+                        mode="markers+lines",
+                        name="SDT epoch measurements",
+                    ))
+                    spectrum_figure.update_layout(
+                        title=f"{candidate.candidate_id} · sparse SDT epoch measurements",
+                        xaxis_title="Wavelength (µm)",
+                        yaxis_title=next(iter(units)),
+                        template="plotly_dark",
+                        height=380,
+                    )
+                    st.plotly_chart(spectrum_figure, use_container_width=True, config={"displaylogo": False})
+            for row in measurements:
+                if row.get("status") != "ok":
+                    st.warning(f"{row.get('observation_id', 'Epoch')}: {row.get('detail', row.get('status'))}")
+            st.caption(sdt_spectrum.get("limitation", "SDT spectral measurement limitations are unavailable."))
+            with st.expander("SDT extraction provenance", expanded=False):
+                st.json({key: value for key, value in sdt_spectrum.items() if key != "measurements"})
+                st.download_button(
+                    "DOWNLOAD SDT SPECTRAL PHOTOMETRY (JSON)",
+                    data=json.dumps(provenance.safe_json(sdt_spectrum), indent=2),
+                    file_name=f"sdt_spectrum_{candidate.candidate_id}_{comparison.get('run_id', 'run')}.json",
+                    mime="application/json",
+                    key=f"download_sdt_spectrum_{candidate.candidate_id}",
+                )
 
 with st.expander("SPHEREx ePSF diagnostics and supplemental fit", expanded=False):
     st.caption(

@@ -65,6 +65,7 @@ def test_photutils_epsf_fit_recovers_injected_subpixel_source(tmp_path):
     grid = (np.arange(33, dtype=float) - 16.0) / oversampling
     yy_model, xx_model = np.meshgrid(grid, grid, indexing="ij")
     epsf_array = np.exp(-0.5 * ((xx_model / 0.58) ** 2 + (yy_model / 0.58) ** 2))
+    epsf_array[0, 0] = -1e-5  # Empirical ePSFs can contain small negative edge samples.
     epsf_array *= (oversampling**2) / float(epsf_array.sum())
     columns = [
         fits.Column(name="BINX", format="J", array=[0]),
@@ -117,5 +118,7 @@ def test_photutils_epsf_fit_recovers_injected_subpixel_source(tmp_path):
     assert result["y_fit"] == pytest.approx(true_y, abs=0.08)
     assert result["epsf_oversampling_xy"] == [5, 5]
     assert result["epsf_normalization_ratio"] == pytest.approx(1.0, rel=0.02)
+    assert result["epsf_negative_sample_count"] == 1
+    assert any("not clipped" in warning for warning in result["warnings"])
     assert "PSFPhotometry" in result["interpretation"]
 
