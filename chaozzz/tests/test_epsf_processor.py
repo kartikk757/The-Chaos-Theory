@@ -86,9 +86,15 @@ def test_photutils_epsf_fit_recovers_injected_subpixel_source(tmp_path):
 
     true_x, true_y, true_flux = 30.35, 31.65, 500.0
     image_y, image_x = np.indices((64, 64), dtype=float)
-    epsf_model = ImagePSF(epsf_array, oversampling=(oversampling, oversampling))
+    epsf_model = ImagePSF(
+        epsf_array,
+        oversampling=(oversampling, oversampling),
+        flux=true_flux,
+        x_0=true_x,
+        y_0=true_y,
+    )
     rng = np.random.default_rng(42)
-    science = 100.0 + epsf_model(image_x, image_y, flux=true_flux, x_0=true_x, y_0=true_y)
+    science = 100.0 + epsf_model(image_x, image_y)
     science += rng.normal(0.0, 0.02, size=science.shape)
     product = SimpleNamespace(
         path=str(path),
