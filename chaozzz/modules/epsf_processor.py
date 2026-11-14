@@ -1,9 +1,4 @@
-"""SPHEREx ePSF zone selection and descriptive diagnostics.
-
-This module inspects the official FITS ePSF table. It does not perform PSF
-photometry or claim a fitted detection; oversampled models require correct
-sub-pixel shifting and integration before native-pixel fitting.
-"""
+"""SPHEREx ePSF zone selection, diagnostics, and supplemental source fits."""
 from __future__ import annotations
 
 import math
@@ -147,6 +142,7 @@ def epsf_for_position(product, x_pixel: float, y_pixel: float) -> dict[str, Any]
                 "oversampling_x": int(header.get("OVSMPX", 0) or 0),
                 "oversampling_y": int(header.get("OVSMPY", 0) or 0),
                 "epsf_sum_raw": model_sum,
+                "epsf_model_raw": model.copy(),
                 "epsf_peak_raw": float(np.nanmax(model)),
                 "epsf_min_raw": float(np.nanmin(model)),
                 "epsf_nonfinite_fraction": float(np.mean(~np.isfinite(model))),
@@ -160,11 +156,251 @@ def epsf_for_position(product, x_pixel: float, y_pixel: float) -> dict[str, Any]
                 "wavelength_delta_um": wavelength_delta,
                 "zone_grid_shape": [int(np.nanmax(data[names["BINX"]])) + 1, int(np.nanmax(data[names["BINY"]])) + 1],
                 "warnings": warnings_out,
-                "interpretation": "Zone-selection and model diagnostics only. No PSF fit, matched-filter detection, or validated photometry was performed.",
+                "interpretation": "Zone-selection and model diagnostics. Fits use the oversampled model at native-pixel centres with its FITS normalization; they are supplemental measurements, not validated sensitivity gains.",
                 "source": "EPSF binary-table extension from this exact FITS product",
             }
     except EPSFError:
         raise
     except Exception as exc:
         raise EPSFError(f"Could not inspect SPHEREx EPSF extension: {exc}") from exc
+
+
+def _detector_number(value: Any) -> int | None:
+    digits = "".join(character for character in str(value or "") if character.isdigit())
+    try:
+        number = int(digits[-1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    return number if 1 <= number <= 6 else None
+
+
+def _flux_conversion_to_jy(product) -> tuple[float | None, str]:
+    """Return a pixel-integrated surface-brightness conversion when defined."""
+    unit = "".join(str(product.bunit or "").lower().split())
+    if product.wcs is None or not product.wcs.has_celestial:
+        return None, f"{product.bunit or 'image unit'} pixel-sum"
+    try:
+        from astropy import units as u
+        from astropy.wcs.utils import proj_plane_pixel_area
+
+        area_sr = float((proj_plane_pixel_area(product.wcs) * u.deg**2).to_value(u.sr))
+    except Exception:
+        return None, f"{product.bunit or 'image unit'} pixel-sum"
+    if "mjy/sr" in unit or "mjy/steradian" in unit:
+        return area_sr * 1e6, "Jy"
+    if "jy/sr" in unit or "jy/steradian" in unit:
+        return area_sr, "Jy"
+    if unit == "mjy":
+        return 1e6, "Jy"
+    if unit == "jy":
+        return 1.0, "Jy"
+    return None, f"{product.bunit or 'image unit'} pixel-sum"
+
+
+def fit_source(
+    product,
+    x_pixel: float,
+    y_pixel: float,
+    *,
+    fit_shape: int = 9,
+    background_inner_radius_px: float = 4.0,
+    background_outer_radius_px: float = 7.0,
+    max_position_shift_px: float = 1.5,
+) -> dict[str, Any]:
+    """Fit one selected source with the product's spatially appropriate ePSF.
+
+    The FITS EPSF array is passed to Photutils without renormalizing it. The
+    returned flux is labelled in integrated image units, or converted to Jy
+    only when the FITS BUNIT and celestial pixel area make that conversion
+    explicit. This is a supplemental isolated-source fit: it does not deblend
+    neighbors, recalibrate the PSF, classify candidates, or claim a sensitivity
+    improvement.
+    """
+    try:
+        x0, y0 = float(x_pixel), float(y_pixel)
+    except (TypeError, ValueError):
+        return {"status": "invalid_position", "detail": "Finite image-pixel coordinates are required."}
+    if not np.isfinite(x0) or not np.isfinite(y0):
+        return {"status": "invalid_position", "detail": "Finite image-pixel coordinates are required."}
+    try:
+        fit_shape = int(fit_shape)
+        background_inner_radius_px = float(background_inner_radius_px)
+        background_outer_radius_px = float(background_outer_radius_px)
+        max_position_shift_px = float(max_position_shift_px)
+    except (TypeError, ValueError, OverflowError):
+        return {"status": "invalid_configuration", "detail": "The fit window and background/position limits must be numeric."}
+    if (
+        fit_shape < 5
+        or fit_shape % 2 != 1
+        or not np.isfinite(background_inner_radius_px)
+        or not np.isfinite(background_outer_radius_px)
+        or background_inner_radius_px < 0
+        or background_outer_radius_px <= background_inner_radius_px
+        or not np.isfinite(max_position_shift_px)
+        or max_position_shift_px <= 0
+    ):
+        return {"status": "invalid_configuration", "detail": "The PSF fit window must be an odd size of at least 5 pixels."}
+    try:
+        info = epsf_for_position(product, x0, y0)
+    except EPSFError as exc:
+        return {"status": "unavailable", "detail": str(exc)}
+    if info.get("status") != "ok":
+        return {"status": info.get("status", "unavailable"), "detail": info.get("detail", "No compatible ePSF model is available."), "diagnostics": {key: value for key, value in info.items() if key not in {"epsf_model_raw", "epsf_normalized"}}}
+    if info.get("warnings"):
+        severe_warnings = [item for item in info["warnings"] if "differs from the image" in item or "oversampling metadata" in item]
+        if severe_warnings:
+            return {"status": "incompatible", "detail": "The selected ePSF is not demonstrably compatible with this image position.", "warnings": list(info["warnings"])}
+
+    image_detector = _detector_number(product.header.get("DETECTOR", ""))
+    epsf_detector = _detector_number(info.get("detector", ""))
+    if image_detector is not None and epsf_detector is not None and image_detector != epsf_detector:
+        return {"status": "incompatible_detector", "detail": f"IMAGE detector {image_detector} does not match ePSF detector {epsf_detector}.", "warnings": list(info.get("warnings", []))}
+
+    image = np.asarray(product.science, dtype=float)
+    if image.ndim != 2 or min(image.shape) < fit_shape:
+        return {"status": "invalid_input", "detail": "A two-dimensional science image larger than the fit window is required."}
+    margin = max(fit_shape // 2 + 1, int(np.ceil(background_outer_radius_px)))
+    if x0 < margin or y0 < margin or x0 > image.shape[1] - 1 - margin or y0 > image.shape[0] - 1 - margin:
+        return {"status": "edge_source", "detail": "The selected source is too close to the image edge for the fit window and background annulus."}
+
+    try:
+        from astropy.stats import sigma_clipped_stats
+        from astropy.table import QTable
+        from photutils.psf import ImagePSF, PSFPhotometry
+    except Exception as exc:
+        return {"status": "unavailable", "detail": f"Photutils ePSF fitting is unavailable: {exc}"}
+
+    finite = np.isfinite(image)
+    bad_flags = np.asarray(getattr(product, "bad_flag_mask", np.zeros(image.shape, dtype=bool)), dtype=bool)
+    if bad_flags.shape != image.shape:
+        bad_flags = np.zeros(image.shape, dtype=bool)
+    mask = ~finite | bad_flags
+    variance = getattr(product, "variance", None)
+    if variance is not None and np.asarray(variance).shape == image.shape:
+        variance = np.asarray(variance, dtype=float)
+        mask |= ~np.isfinite(variance) | (variance <= 0)
+        error = np.sqrt(np.where(mask, 1.0, variance))
+        error_source = "SPHEREx VARIANCE extension; flagged/non-positive pixels masked"
+    else:
+        variance = None
+        error_source = "robust sigma-clipped image noise; no usable variance extension"
+    if np.count_nonzero(~mask) < fit_shape * fit_shape:
+        return {"status": "invalid_input", "detail": "Too few unmasked image pixels remain for an ePSF fit."}
+
+    yy, xx = np.indices(image.shape, dtype=float)
+    radius = np.hypot(xx - x0, yy - y0)
+    annulus = (radius >= background_inner_radius_px) & (radius <= background_outer_radius_px) & ~mask
+    annulus_values = image[annulus]
+    if annulus_values.size < 8:
+        return {"status": "invalid_background", "detail": "Fewer than 8 valid pixels are available in the local background annulus."}
+    background = float(np.median(annulus_values))
+    fit_image = np.where(mask, 0.0, image - background)
+    if variance is None:
+        _, _, noise = sigma_clipped_stats(image[~mask], sigma=3.0, maxiters=5)
+        if not np.isfinite(noise) or noise <= 0:
+            return {"status": "invalid_noise", "detail": "A positive robust image-noise estimate could not be measured."}
+        error = np.full(image.shape, float(noise), dtype=float)
+
+    raw_model = np.asarray(info.get("epsf_model_raw"), dtype=float)
+    oversampling_x = int(info.get("oversampling_x") or 0)
+    oversampling_y = int(info.get("oversampling_y") or 0)
+    if raw_model.ndim != 2 or min(raw_model.shape) < 4 or not np.all(np.isfinite(raw_model)) or np.any(raw_model < 0):
+        return {"status": "invalid_epsf", "detail": "The selected ePSF model must be a finite, non-negative two-dimensional array."}
+    if oversampling_x <= 0 or oversampling_y <= 0 or float(np.sum(raw_model)) <= 0:
+        return {"status": "invalid_epsf", "detail": "The selected ePSF model has invalid oversampling or normalization metadata."}
+    expected_oversampled_sum = float(oversampling_x * oversampling_y)
+    raw_sum = float(np.sum(raw_model))
+    normalization_ratio = raw_sum / expected_oversampled_sum
+    try:
+        psf_model = ImagePSF(
+            data=raw_model,
+            oversampling=(oversampling_y, oversampling_x),
+            x_0=x0,
+            y_0=y0,
+        )
+        initial_flux = float(np.nansum(fit_image[(radius <= 2.5) & ~mask]))
+        if not np.isfinite(initial_flux) or initial_flux <= 0:
+            initial_flux = max(float(np.nanmax(fit_image[~mask])) * float(np.sum(raw_model)) / max(float(np.nanmax(raw_model)), 1e-30), 1e-12)
+        init = QTable({"x": [x0], "y": [y0], "flux": [initial_flux]})
+        photometry = PSFPhotometry(
+            psf_model,
+            fit_shape=fit_shape,
+            xy_bounds=float(max_position_shift_px),
+            fitter_maxiters=150,
+        )
+        results = photometry(fit_image, error=error, mask=mask, init_params=init)
+        row = results[0]
+        fitted_flux = float(row["flux_fit"])
+        fitted_x = float(row["x_fit"])
+        fitted_y = float(row["y_fit"])
+        flux_error_value = row["flux_err"] if "flux_err" in results.colnames else None
+        fitted_error = float(flux_error_value) if flux_error_value is not None and np.isfinite(float(flux_error_value)) else None
+        fitted_model = photometry.make_model_image(image.shape, psf_shape=fit_shape)
+        xfit_i, yfit_i = int(round(fitted_x)), int(round(fitted_y))
+        half = fit_shape // 2
+        y_slice = slice(max(0, yfit_i - half), min(image.shape[0], yfit_i + half + 1))
+        x_slice = slice(max(0, xfit_i - half), min(image.shape[1], xfit_i + half + 1))
+        valid_fit = ~mask[y_slice, x_slice]
+        residual = fit_image[y_slice, x_slice] - fitted_model[y_slice, x_slice]
+        standardized = residual[valid_fit] / error[y_slice, x_slice][valid_fit]
+        dof = max(1, standardized.size - 3)
+        reduced_chi2 = float(np.sum(standardized**2) / dof)
+        photometry_flags = int(row["flags"]) if "flags" in results.colnames else 0
+        conversion, flux_unit = _flux_conversion_to_jy(product)
+        warnings_out = list(info.get("warnings", []))
+        if not 0.8 <= normalization_ratio <= 1.2:
+            warnings_out.append(
+                f"Finite ePSF sum / oversampling area is {normalization_ratio:.3f}; the fitted amplitude retains the FITS normalization and its total-flux scale is not validated."
+            )
+            conversion = None
+            flux_unit = f"{product.bunit or 'image unit'} ePSF amplitude (scale unvalidated)"
+        flux_out = fitted_flux * conversion if conversion is not None else fitted_flux
+        error_out = fitted_error * conversion if conversion is not None and fitted_error is not None else fitted_error
+        if variance is not None:
+            warnings_out.append("Flux errors use per-pixel variance and omit background-estimation and inter-pixel covariance terms.")
+        else:
+            warnings_out.append("Flux errors use an image-wide robust-noise approximation; background structure and correlated noise are not modelled.")
+        warnings_out.append("This isolated-source ePSF fit is supplemental; no candidate classification or sensitivity-improvement claim is derived from it.")
+        return {
+            "status": "ok",
+            "x_fit": fitted_x,
+            "y_fit": fitted_y,
+            "x_initial": x0,
+            "y_initial": y0,
+            "flux_fit": float(flux_out),
+            "flux_error": float(error_out) if error_out is not None else None,
+            "flux_unit": flux_unit,
+            "flux_fit_native": fitted_flux,
+            "flux_error_native": fitted_error,
+            "native_flux_unit": f"{product.bunit or 'image unit'} pixel-sum",
+            "background_level": background,
+            "background_annulus_px": [float(background_inner_radius_px), float(background_outer_radius_px)],
+            "error_source": error_source,
+            "fit_shape": [fit_shape, fit_shape],
+            "fit_pixels": int(standardized.size),
+            "reduced_chi_square": reduced_chi2,
+            "photometry_flags": photometry_flags,
+            "epsf_zone_id": list(info["zone_id"]),
+            "epsf_oversampling_xy": [oversampling_x, oversampling_y],
+            "epsf_sum_finite": raw_sum,
+            "epsf_expected_oversampled_sum": expected_oversampled_sum,
+            "epsf_normalization_ratio": normalization_ratio,
+            "epsf_zone_wavelength_um": info.get("epsf_center_wavelength_um"),
+            "image_wavelength_at_source_um": info.get("image_wavelength_at_source_um"),
+            "wavelength_delta_um": info.get("wavelength_delta_um"),
+            "detector": info.get("detector"),
+            "product_version": info.get("product_version"),
+            "product_sha256": str(product.sha256),
+            "pixel_solid_angle_conversion_to_jy": conversion,
+            "warnings": warnings_out,
+            "interpretation": "Supplemental single-source fit to the exact product ePSF using Photutils ImagePSF and PSFPhotometry; not a calibrated completeness or sensitivity estimate.",
+        }
+    except Exception as exc:
+        return {
+            "status": "fit_failed",
+            "detail": f"Photutils ePSF fit failed: {exc}",
+            "epsf_zone_id": list(info["zone_id"]),
+            "product_sha256": str(product.sha256),
+            "warnings": list(info.get("warnings", [])),
+        }
 

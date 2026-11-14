@@ -1,10 +1,12 @@
 """Candidate investigation workspace: evidence, warnings, cross-match and export."""
 from __future__ import annotations
 
+import json
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from astropy.coordinates import SkyCoord
 
 import config
 from components import candidate_table, image_viewer, navbar, sidebar, status_panel
@@ -38,6 +40,27 @@ def _record_jpl_provenance(comparison: dict, query: str, *, jpl_result: dict | N
         "result": jpl_result,
         "error": error,
         "scope": "User-specified known-object hypothesis only; not a blind discovery search.",
+    }
+    provenance.write_json(config.OUTPUT_DIR / "runs" / f"{run_id}.json", record)
+    comparison["provenance"] = record
+    state.set_value("comparison", comparison)
+
+
+def _record_epsf_provenance(comparison: dict, candidate_id: str, result: dict) -> None:
+    """Append supplemental ePSF fits to the reproducible candidate run JSON."""
+    run_id = comparison.get("run_id")
+    if not run_id or run_id == "no-two-epoch-run":
+        return
+    record = comparison.get("provenance")
+    if not isinstance(record, dict) or record.get("run_id") != run_id:
+        path = config.OUTPUT_DIR / "runs" / f"{run_id}.json"
+        record = provenance.read_json(path) if path.exists() else {"run_id": run_id}
+    measurements = record.setdefault("ancillary_measurements", {})
+    measurements["SPHEREx ePSF photometry"] = {
+        "candidate_id": candidate_id,
+        "checked_utc": provenance.utc_now(),
+        "result": result,
+        "scope": "Supplemental isolated-source fit to the selected candidate; not used to change its classification or to claim a sensitivity improvement.",
     }
     provenance.write_json(config.OUTPUT_DIR / "runs" / f"{run_id}.json", record)
     comparison["provenance"] = record
@@ -260,14 +283,79 @@ else:
         with st.expander("Candidate spectrum provenance and limitations", expanded=False):
             st.json({key: value for key, value in spectrum.items() if key not in ("wavelength_um", "flux", "background_per_pixel", "flux_error", "valid_fraction")})
 
-with st.expander("SPHEREx ePSF zone diagnostics (inspection only)", expanded=False):
+with st.expander("SPHEREx ePSF diagnostics and supplemental fit", expanded=False):
     st.caption(
         "The official EPSF table is selected by mapping the displayed sky coordinate through each FITS WCS and back to the parent detector zone. "
-        "These plots inspect the model only; the current candidate measurements are not ePSF fits."
+        "The original candidate measurements remain aperture-based. An optional single-source fit below uses Photutils ImagePSF with the FITS-provided normalization and is supplemental evidence only."
     )
     if aligned is None or product1 is None or product2 is None or aligned.target_wcs is None:
         st.info("Load a compatible pair before inspecting ePSF zones.")
     else:
+        if st.button("FIT SELECTED CANDIDATE WITH THE ePSF IN BOTH EPOCHS", key=f"fit_epsf_{candidate.candidate_id}"):
+            epoch_results = []
+            for index, product in enumerate((product1, product2), start=1):
+                epoch_key = f"epoch{index}"
+                epoch_info = candidate.metadata.get(epoch_key, {})
+                ra_value = epoch_info.get("ra_deg", candidate.ra_deg)
+                dec_value = epoch_info.get("dec_deg", candidate.dec_deg)
+                sky_position_deg = None
+                try:
+                    if product.wcs is None or not np.isfinite(float(ra_value)) or not np.isfinite(float(dec_value)):
+                        raise ValueError("A finite sky position and celestial product WCS are required.")
+                    ra_value, dec_value = float(ra_value), float(dec_value)
+                    sky_position_deg = [ra_value, dec_value]
+                    sky_position = SkyCoord(ra_value, dec_value, unit="deg", frame="icrs")
+                    x_native, y_native = product.wcs.world_to_pixel(sky_position)
+                    fit = epsf_processor.fit_source(product, float(x_native), float(y_native))
+                except Exception as exc:
+                    fit = {"status": "unavailable", "detail": str(exc)}
+                epoch_results.append({
+                    "epoch": index,
+                    "observation_id": epoch_info.get("id"),
+                    "date_utc": epoch_info.get("date_utc"),
+                    "matched_source": epoch_info.get("matched_source"),
+                    "sky_position_icrs_deg": sky_position_deg,
+                    "fit": fit,
+                })
+            fit_report = {
+                "status": "ok" if all(row["fit"].get("status") == "ok" for row in epoch_results) else "partial",
+                "run_id": comparison.get("run_id"),
+                "candidate_id": candidate.candidate_id,
+                "epochs": epoch_results,
+                "limitation": "Supplemental isolated-source fits do not update aperture classifications, deblend neighbors, calibrate completeness, or establish a sensitivity gain.",
+            }
+            candidate.metadata["epsf_photometry"] = fit_report
+            comparison["candidates"] = candidates
+            state.set_value("comparison", comparison)
+            _record_epsf_provenance(comparison, candidate.candidate_id, fit_report)
+
+        fit_report = candidate.metadata.get("epsf_photometry") or {}
+        if fit_report.get("candidate_id") == candidate.candidate_id:
+            for epoch_row in fit_report.get("epochs", []):
+                fit = epoch_row.get("fit", {})
+                st.markdown(f"**Epoch {epoch_row.get('epoch')} · {epoch_row.get('observation_id') or 'observation unavailable'}**")
+                if fit.get("status") == "ok":
+                    st.dataframe([
+                        {"measurement": "Fitted ePSF amplitude", "value": f"{fit['flux_fit']:.6g} {fit['flux_unit']}"},
+                        {"measurement": "Fit uncertainty", "value": (f"{fit['flux_error']:.4g} {fit['flux_unit']}" if fit.get("flux_error") is not None else "not available")},
+                        {"measurement": "Fitted native pixel position", "value": [fit["x_fit"], fit["y_fit"]]},
+                        {"measurement": "Reduced chi-square", "value": fit["reduced_chi_square"]},
+                        {"measurement": "ePSF zone / oversampling", "value": [fit["epsf_zone_id"], fit["epsf_oversampling_xy"]]},
+                        {"measurement": "Wavelength delta (µm)", "value": fit.get("wavelength_delta_um")},
+                        {"measurement": "Normalization ratio", "value": fit.get("epsf_normalization_ratio")},
+                    ], use_container_width=True, hide_index=True)
+                    if fit.get("warnings"):
+                        st.caption(" · ".join(fit["warnings"]))
+                else:
+                    st.info(f"ePSF fit {fit.get('status', 'unavailable')}: {fit.get('detail', 'No compatible measurement was produced.')}")
+            st.download_button(
+                "DOWNLOAD ePSF FIT REPORT (JSON)",
+                data=json.dumps(provenance.safe_json(fit_report), indent=2),
+                file_name=f"epsf_{candidate.candidate_id}_{comparison.get('run_id', 'run')}.json",
+                mime="application/json",
+                key=f"download_epsf_{candidate.candidate_id}",
+            )
+
         candidate_sky = aligned.target_wcs.pixel_to_world(candidate.pixel_x, candidate.pixel_y)
         epsf_columns = st.columns(2)
         for index, (column, product) in enumerate(zip(epsf_columns, (product1, product2)), start=1):

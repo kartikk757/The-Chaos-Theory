@@ -22,7 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import config  # noqa: E402
-from modules import data_loader, irsa_client, multi_epoch, pipeline, wcs_alignment  # noqa: E402
+from modules import data_loader, epsf_processor, irsa_client, multi_epoch, pipeline, wcs_alignment  # noqa: E402
 
 VERIFIED_IDS = ("2026W20_2A_0464_1", "2026W26_1A_0178_1")
 
@@ -99,6 +99,43 @@ def main() -> int:
                   f"units {outcome['units']} · noise {outcome['difference'].global_noise:.4g}")
             print(f"   candidates: {outcome['candidate_summary']['total']} {outcome['candidate_summary']['counts']}")
             print("   (screening records only — this application makes no discovery claim)")
+
+            print("5b. Fitting one candidate with each real QR3 ePSF model ...")
+            if not all("EPSF" in {str(name).upper() for name in product.extension_names} for product in products[:2]):
+                failures.append("the verified QR3 reference pair did not both contain the documented EPSF extension")
+            elif not outcome.get("candidates"):
+                failures.append("the real two-epoch run produced no candidate position for an ePSF fit")
+            else:
+                epsf_candidate = next(
+                    (
+                        candidate for candidate in outcome["candidates"]
+                        if candidate.quality.get("matched_epoch1") and candidate.quality.get("matched_epoch2")
+                    ),
+                    outcome["candidates"][0],
+                )
+                epsf_results = []
+                from astropy.coordinates import SkyCoord
+
+                for epoch_index, product in enumerate(products[:2], start=1):
+                    epoch = epsf_candidate.metadata.get(f"epoch{epoch_index}", {})
+                    try:
+                        sky = SkyCoord(float(epoch["ra_deg"]), float(epoch["dec_deg"]), unit="deg", frame="icrs")
+                        x_native, y_native = product.wcs.world_to_pixel(sky)
+                        fit = epsf_processor.fit_source(product, float(x_native), float(y_native))
+                    except Exception as error:
+                        fit = {"status": "unavailable", "detail": str(error)}
+                    epsf_results.append(fit)
+                    if fit.get("status") != "ok":
+                        failures.append(f"real epoch {epoch_index} ePSF fit failed: {fit.get('detail', fit.get('status'))}")
+                    else:
+                        print(
+                            f"   epoch {epoch_index} {epoch.get('id')} | candidate {epsf_candidate.candidate_id} | "
+                            f"fit {fit['flux_fit']:.6g} {fit['flux_unit']} | "
+                            f"reduced chi-square {fit['reduced_chi_square']:.3f} | "
+                            f"ePSF zone {fit['epsf_zone_id']} | checksum {fit['product_sha256']}"
+                        )
+                if len(epsf_results) == 2 and all(row.get("status") == "ok" for row in epsf_results):
+                    print("   ePSF fit is supplemental photometry; no classification or sensitivity claim is derived from it")
 
     print("6. Loading independent dates for a real three-epoch analysis ...")
     by_date: dict[str, dict] = {}
