@@ -43,7 +43,7 @@ def test_mosaic_cube_validates_wavelengths_and_extracts_background_subtracted_ap
     result = mosaic_cube.extract_aperture_spectrum(cube, 10.0, 20.0, aperture_radius_px=2.0, annulus_inner_px=5.0, annulus_outer_px=8.0)
     assert cube.metadata["wavelength_source"].startswith("SPECTRAL_CHANNELS")
     assert result["status"] == "ok"
-    assert result["wavelength_um"].tolist() == list(np.linspace(1.0, 1.4, 5))
+    np.testing.assert_allclose(result["wavelength_um"], np.linspace(1.0, 1.4, 5), rtol=1e-6, atol=0.0)
     assert np.all(result["flux"] > 0)
     assert "mJy" in result["flux_unit"]
     assert len(result["limitations"]) >= 3
