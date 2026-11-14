@@ -37,9 +37,18 @@ full provenance and explicit limitations.
 | Candidate table, detail panel, CSV export, provenance JSON | Implemented | `components/candidate_table.py`, `modules/pipeline.py` |
 | Local FITS upload path with unverified-provenance labelling | Implemented | `modules/data_loader.py` |
 | Labelled synthetic fallback (DEMONSTRATION DATA) | Implemented | `scripts/generate_demo_data.py` |
-| Unit + integration test suite (57 tests) | Passing | `tests/` |
-| Multi-epoch tracking beyond two epochs | **Not implemented** (documented limitation) | — |
-| PSF-matched differencing | **Not implemented** (documented limitation) | — |
+| Multi-epoch association and linear motion screening | Implemented; experimental, requires ≥3 detections for motion classification | `modules/multi_epoch.py` |
+| Gaia DR3 epoch propagation and uncertainty-aware cross-match | Implemented; optional online query, no-match remains inconclusive | `modules/gaia_client.py` |
+| SPHEREx ePSF spatial-zone inspection | Implemented for diagnostics only; no ePSF photometry or PSF matching | `modules/epsf_processor.py` |
+| Official Source Discovery Tool comparison | Optional adapter; requires tutorial package and external SExtractor | `modules/spherex_sdt_adapter.py` |
+| 2MASS PSC / AllWISE uncertainty-aware matching | Implemented with alternate matches and quality diagnostics | `modules/catalogue_matching.py` |
+| JPL SBDB / Horizons known-object hypothesis check | Implemented for a user-specified known object, never blind discovery | `modules/jpl_crossmatch.py` |
+| Mosaic / HiPS cube quick-look spectrum | Implemented for uploaded or fetched FITS cubes; separate from time-domain evidence | `modules/mosaic_cube.py` |
+| Optional SPHEREx HiPS context viewer | Implemented; public Aladin Lite and optional HEALPix indexing | `modules/hips_viewer.py` |
+| Multi-epoch blinking and candidate overlay | Implemented for loaded epochs; pair differences still require pair compatibility | `pages/04_Cosmic_Image_Lab.py` |
+| Controlled injection/recovery | Implemented for supplied image/kernel only; not statistically calibrated | `modules/validation.py` |
+| Full test suite and live archive integration | **Validation pending** until rerun in the active environment | `tests/`, `scripts/live_archive_check.py` |
+| ePSF photometry and PSF-matched differencing | **Not implemented**; requires scientific validation before use | — |
 
 ---
 
@@ -265,7 +274,7 @@ so the demonstration workflow also works in a fresh cloud deployment; see `data/
 - Real archive data, cached real data, local uploads and synthetic data carry distinct `data_mode` labels; mixing them is
   a hard compatibility failure.
 - Synthetic products carry `DEMONSTRATION DATA - SYNTHETIC` in their FITS headers and are announced by a red banner.
-- Every displayed candidate number is traceable to its two input files, their checksums and the configuration used.
+- Every pair candidate and multi-epoch track is traceable to input product checksums and the configuration used; external checks are retained in run provenance.
 - No network failure is hidden, and no observation is silently substituted.
 - Units are explicit everywhere: MJy/sr for surface brightness, Jy for fluxes, arcsec for displacement, days for Δt.
 
@@ -278,8 +287,7 @@ so the demonstration workflow also works in a fresh cloud deployment; see `data/
   the crop is reported (with the central wavelength marked unverified after cropping).
 - Archive metadata cached 30 min (`st.cache_data`), SIA2 15 min, FITS products cached by path + mtime + SHA-256,
   processing results cached by serialized inputs + configuration; session state is never cached.
-- HTTP retries (3 attempts with backoff) and explicit `ArchiveError` messages, including the HTTP status and response body
-  excerpt.
+- Bounded HTTP retries, process-local per-service request spacing, cache use and explicit service errors. Cutout downloads use size limits.
 - Rendering uses downsampled percentiles; heavy work (reprojection, photometry, detection) runs inside cached functions
   separate from rendering.
 
@@ -287,47 +295,44 @@ so the demonstration workflow also works in a fresh cloud deployment; see `data/
 
 ## 9. Testing
 
+Run offline tests with:
+
+```bash
+python -m pytest tests -q
 ```
-$ python3 -m pytest tests -q
-57 passed
-```
 
-- `tests/test_data_loader.py` — extension/unit discovery, FLAGS parsing, NaN handling, upload rejection, checksums,
-  local-observation labelling.
-- `tests/test_alignment.py` — compatibility gate (band, mode, WCS, Δλ tolerance, missing WCS) and reprojection,
-  masking and insufficient-overlap refusal.
-- `tests/test_difference.py` — background removal, `D = I₂ − I₁` equality, VARIANCE propagation, NaN preservation,
-  robust-noise fallback.
-- `tests/test_detection.py` — recovery of a known injected residual, noise-only behaviour, threshold monotonicity,
-  dipole merging, and the guard that candidate text never contains discovery language.
-- `tests/test_pipeline.py` — end-to-end run, deterministic run IDs, provenance file, CSV export, refusal of an
-  incompatible pair, honest failure on a missing file.
-- `tests/test_irsa_client.py` — coordinate parsing, query validation, record normalisation, SIA2 collection mapping.
+The suite includes coverage for the original workflow plus coordinate provenance, Gaia propagation, ePSF selection,
+multi-epoch association, uncertainty-aware catalogue matching, the optional SExtractor adapter, JPL request parsing,
+cube extraction, HiPS indexing, injection/recovery and WCS-aware visualization. Test results are reported with each
+release. The latest local attempt stopped during test collection because Windows Application Control blocked the
+compiled `astropy.wcs._wcs` DLL; Python compilation completed successfully, but the test suite and live archive check
+remain unverified in this environment.
 
-Interface-level verification performed during development:
-
-- `streamlit.testing.v1.AppTest` for `app.py` and all nine pages: 0 exceptions in the empty state.
-- `AppTest` with a populated session (demo pair *and* the real cached pair, including a completed pipeline run):
-  0 exceptions on Mission Control, Cosmic Image Lab, Detection Engine, Candidate Investigation and Data Explorer.
-- Live server: root and every page route return HTTP 200; `/_stcore/health` returns 200.
+For a real archive integration check, run `python scripts/live_archive_check.py`. This requests public IRSA services and
+downloads real cutouts; it is separate from offline tests and records the actual observation IDs and checksums in output.
 
 ---
 
 ## 10. Known limitations and honest gaps
 
-1. **Two epochs only.** Motion is reported as the displacement between matched counterparts in one pair. Track
-   consistency across three or more epochs is not implemented.
-2. **No PSF matching.** SPHEREx pixels undersample the PSF, so PSF differences leave residuals. Aperture photometry and
-   peak detection are used, not optimal PSF photometry.
-3. **Displacement quantisation.** Positions come from peak pixels; sub-pixel centroiding and the resulting ~1-pixel
-   quantisation mean small motions are not measurable. The alignment tolerance (1.5 px ≈ 9.2″) is stated on every record.
-4. **Catalogue matching is shallow.** 2MASS and AllWISE only; no proper-motion, variability or solar-system ephemeris
-   matching, so "no match" is genuinely inconclusive.
-5. **Zodiacal handling** relies on the product `ZODI` model; no independent background model is fitted.
-6. **WCS-only alignment.** No image-based refinement (cross-correlation) is attempted when the WCS is imperfect.
-7. **No synchronized pan/zoom** between the two viewer panels; the blink comparator is provided for registration checks.
-8. **Single-pair scope.** The app compares two observations at a time; it does not batch-process a field.
-9. **Local uploads** are processed but their provenance cannot be verified, and the interface says so.
+1. **Motion screening remains experimental.** The multi-epoch fit uses sparse peaks and a conservative, uncalibrated
+   positional uncertainty floor. It can identify potential tracks for review, not confirm physical objects or orbits.
+2. **Two-epoch limitation.** Two observations provide a displacement only and retain the `2-EPOCH-ONLY` label.
+3. **No PSF-aware flux measurement.** The ePSF zone can be inspected, but candidate photometry still uses the existing
+   aperture path. PSF matching and sensitivity improvement are not claimed.
+4. **Gaia propagation limits.** Gaia positions use linear proper motion; parallax and perspective effects are omitted.
+   Gaia absence is not evidence of an unknown source.
+5. **Catalogue epoch limits.** 2MASS/AllWISE counterparts are uncertainty-ranked but not propagated to the SPHEREx
+   epochs. AllWISE motion fields can include parallax and are diagnostic only.
+6. **JPL target scope.** SBDB/Horizons checks require an already-known user-supplied identifier and are not blind
+   small-body discovery searches.
+7. **Spectral quick-look.** Cube spectra use the supplied or fetched cube and aperture/annulus settings. HiPS is
+   visualization context and is not time-separated evidence or a substitute for official spectrophotometry products.
+8. **Validation scope.** Injection/recovery describes only the provided image, kernel, random seed and settings; it is
+   not a global completeness curve, calibrated false-positive probability or sensitivity claim.
+9. **Optional integrations.** Gaia, JPL, HiPS and SExtractor depend on external services or locally installed tools;
+   the core IRSA pair workflow remains available when an optional path fails.
+10. **Local uploads** are processed but their provenance cannot be verified, and the interface says so.
 
 ---
 

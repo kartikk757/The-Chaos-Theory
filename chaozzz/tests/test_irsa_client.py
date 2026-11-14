@@ -105,6 +105,13 @@ def test_sia2_enrichment_marks_unmatched_rows():
     enriched = irsa_client.enrich_observations_with_sia2([observation], [], 210.8, 54.3)
     assert enriched[0]["ra_deg"] == 210.8
     assert "requested field centre" in enriched[0]["coordinates_source"]
+    assert enriched[0]["coordinates_role"] == "requested_field_center"
+    assert enriched[0]["metadata"]["requested_field_center"] == {
+        "ra_deg": 210.8,
+        "dec_deg": 54.3,
+        "coordinate_frame": "ICRS",
+        "source": "IRSA archive query / cutout request",
+    }
     assert len(enriched[0]["warnings"]) == len(before) + 1
 
 

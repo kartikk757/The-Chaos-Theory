@@ -1,0 +1,7 @@
+# Optional NESTED HEALPix index support for the SPHEREx HiPS viewer.
+hpgeom>=1.3
+
+# The IRSA Source Discovery Tool adapter also needs the official
+# spherex_source_discovery_tool checkout and a working SExtractor executable.
+# Follow the install instructions in that project; it is intentionally not a
+# mandatory application dependency.

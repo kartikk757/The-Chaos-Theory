@@ -39,6 +39,7 @@ class Observation:
     central_wavelength_um: float | None = None
     central_bandwidth_um: float | None = None
     coordinates_source: str = "requested field centre"
+    coordinates_role: str = "requested_field_center"
     metadata: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
@@ -67,8 +68,8 @@ class FitsProduct:
     shape: tuple[int, int]
     center_wavelength_um: float | None
     center_bandwidth_um: float | None
-    center_pixel: tuple[float, float]
-    center_sky: tuple[float, float] | None
+    center_pixel: tuple[float, float]  # Requested field centre pixel when available; geometric array centre otherwise.
+    center_sky: tuple[float, float] | None  # Actual world coordinate at the geometric array centre.
     pixel_scale_arcsec: float | None
     file_size_bytes: int
     sha256: str

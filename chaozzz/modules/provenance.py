@@ -115,6 +115,7 @@ def software_versions() -> dict[str, str]:
     packages = [
         "streamlit", "numpy", "scipy", "astropy", "astroquery", "pyvo",
         "photutils", "reproject", "pandas", "plotly", "matplotlib", "requests",
+        "astropy-healpix", "hpgeom",
     ]
     result = {"python": sys.version.split()[0], "app": config.APP_VERSION}
     for package in packages:

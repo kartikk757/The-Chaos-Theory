@@ -1,0 +1,60 @@
+"""Tests for documented SPHEREx ePSF zone selection and diagnostics."""
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import numpy as np
+from astropy.io import fits
+import pytest
+
+from modules import epsf_processor
+
+
+def _epsf_product(path, extensions=None):
+    primary = fits.PrimaryHDU()
+    primary.header["VERSION"] = "7.0.5"
+    image = fits.ImageHDU(data=np.zeros((64, 64), dtype=np.float32), name="IMAGE")
+    image.header["CRPIX1A"] = 1.0
+    image.header["CRPIX2A"] = 1.0
+    hdus = [primary, image, *(extensions or [])]
+    fits.HDUList(hdus).writeto(path, overwrite=True)
+    return SimpleNamespace(path=str(path), metadata={"crop_origin_pixel": [10, 20]}, center_wavelength_um=1.42)
+
+
+def test_selects_nearest_epsf_zone_in_parent_detector_coordinates(tmp_path):
+    model = np.ones((33, 33), dtype=np.float32)
+    columns = [
+        fits.Column(name="BINX", format="J", array=[0, 1]),
+        fits.Column(name="BINY", format="J", array=[0, 1]),
+        fits.Column(name="XCENTER", format="E", array=[15.0, 50.0]),
+        fits.Column(name="YCENTER", format="E", array=[25.0, 50.0]),
+        fits.Column(name="NSTAR", format="J", array=[20, 30]),
+        fits.Column(name="NEFF_MEAN", format="E", array=[4.2, 5.1]),
+        fits.Column(name="CWAVE", format="E", unit="um", array=[1.42, 1.50]),
+        fits.Column(name="CBAND", format="E", unit="um", array=[0.03, 0.04]),
+        fits.Column(name="EPSF", format="1089E", dim="(33,33)", array=[model, model * 2]),
+    ]
+    epsf = fits.BinTableHDU.from_columns(columns, name="EPSF")
+    epsf.header["OVSMPX"] = 5
+    epsf.header["OVSMPY"] = 5
+    epsf.header["DETECTOR"] = "2"
+    product = _epsf_product(tmp_path / "epsf.fits", [epsf])
+
+    result = epsf_processor.epsf_for_position(product, 5.0, 5.0)
+
+    assert result["status"] == "ok"
+    assert result["source_pixel_original_cutout"] == [15.0, 25.0]
+    assert result["parent_detector_pixel"] == [15.0, 25.0]
+    assert result["zone_id"] == [0, 0]
+    assert result["epsf_shape_oversampled"] == [33, 33]
+    assert np.sum(result["epsf_normalized"]) == pytest.approx(1.0)
+    assert result["epsf_effective_area"] == pytest.approx(4.2)
+
+
+def test_legacy_psf_is_not_misreported_as_epsf(tmp_path):
+    psf = fits.ImageHDU(data=np.ones((4, 33, 33), dtype=np.float32), name="PSF")
+    product = _epsf_product(tmp_path / "legacy.fits", [psf])
+    result = epsf_processor.epsf_for_position(product, 2.0, 3.0)
+    assert result["status"] == "unsupported_legacy_psf"
+    assert "does not" in result["detail"]
+

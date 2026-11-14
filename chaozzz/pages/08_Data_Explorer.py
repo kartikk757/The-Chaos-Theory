@@ -122,6 +122,52 @@ else:
     else:
         st.info("No processing run has been executed yet, so there is no provenance record to inspect.")
 
+st.markdown("### Archive query history and service provenance")
+query_history = state.get("archive_query_history", [])
+if query_history:
+    st.dataframe(pd.DataFrame([
+        {
+            "queried_utc": item.get("queried_utc"),
+            "center_icrs_deg": [item.get("query", {}).get("ra_deg"), item.get("query", {}).get("dec_deg")],
+            "radius_deg": item.get("query", {}).get("radius_deg"),
+            "date_range_utc": [item.get("query", {}).get("start_date"), item.get("query", {}).get("end_date")],
+            "band": item.get("query", {}).get("band"),
+            "release": item.get("query", {}).get("release"),
+            "coverage_status": item.get("coverage_status", {}).get("status"),
+            "tap_query": item.get("tap_diagnostics", {}).get("query"),
+            "transport": item.get("tap_diagnostics", {}).get("transport"),
+        }
+        for item in reversed(query_history)
+    ]), use_container_width=True, hide_index=True)
+    st.download_button(
+        "DOWNLOAD ARCHIVE QUERY HISTORY (JSON)",
+        data=json.dumps(provenance.safe_json(query_history), indent=2),
+        file_name="archive_query_history.json",
+        mime="application/json",
+    )
+else:
+    st.info("No live archive query has been made in this session.")
+st.markdown("**Linked resource documentation**")
+for document in config.ARCHIVE_DOCS:
+    st.markdown(f"- [{document['title']}]({document['url']})")
+
+multi_epoch_result = state.get("multi_epoch_result") or {}
+if multi_epoch_result.get("provenance"):
+    st.markdown("### Multi-epoch run provenance")
+    st.json({
+        "run_id": multi_epoch_result.get("run_id"),
+        "provenance_path": multi_epoch_result.get("provenance_path"),
+        "provenance": multi_epoch_result.get("provenance"),
+        "limitations": multi_epoch_result.get("limitations"),
+    })
+    st.download_button(
+        "DOWNLOAD MULTI-EPOCH PROVENANCE JSON",
+        data=json.dumps(provenance.safe_json(multi_epoch_result), indent=2),
+        file_name=f"multi_epoch_{multi_epoch_result.get('run_id')}.json",
+        mime="application/json",
+        key="download_multi_epoch_provenance",
+    )
+
 st.markdown("### Session event log")
 logs = state.get("logs", [])
 if logs:

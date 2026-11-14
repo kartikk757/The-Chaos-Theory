@@ -58,8 +58,8 @@ table = pd.DataFrame([
         "date (UTC)": obs.get("date_utc"),
         "band": obs.get("band"),
         "release": obs.get("release"),
-        "RA (deg)": obs.get("ra_deg"),
-        "Dec (deg)": obs.get("dec_deg"),
+        "Record RA (deg)": obs.get("ra_deg"),
+        "Record Dec (deg)": obs.get("dec_deg"),
         "plane": obs.get("plane_id"),
         "quality": obs.get("quality_flag") or "not supplied",
         "file": "cached" if obs.get("cached_path") else ("remote cutout" if obs.get("cutout_url") else "no FITS URL"),
@@ -68,8 +68,9 @@ table = pd.DataFrame([
 ])
 st.dataframe(table, use_container_width=True, hide_index=True)
 st.caption(
-    "Coordinates come either from the SIA2 footprint centre of the parent observation (preferred) or, when no footprint matched, from the "
-    "requested field centre. The 'coordinates from' column in Sky Explorer records which case applies to each row."
+    "Record coordinates are the parent observation footprint centre when matched by SIA2, or the requested field centre otherwise. "
+    "They are separate from each downloaded cutout's geometric centre, which is measured from that FITS file's WCS. "
+    "The 'coordinates from' field in Sky Explorer identifies the record-coordinate source."
 )
 
 st.markdown("### Select two observations for comparison")
@@ -92,6 +93,19 @@ selection = st.multiselect(
     format_func=lambda value: labels[value],
     max_selections=2,
     help="Only two epochs are compared at a time in this prototype.",
+)
+
+default_epochs = state.get("selected_epoch_ids", [])
+default_epochs = [value for value in default_epochs if value in identifiers]
+default_epochs = list(dict.fromkeys([*default_pair, *default_epochs]))
+epoch_selection = st.multiselect(
+    "Epoch set for multi-epoch investigation (2–20 observations)",
+    identifiers,
+    default=default_epochs,
+    format_func=lambda value: labels[value],
+    max_selections=20,
+    key="multi_epoch_selection",
+    help="The engine sorts by UTC observation time and evaluates every pair. Motion tracks require at least three detections across compatible epochs.",
 )
 
 columns = st.columns([1, 2])
@@ -129,6 +143,41 @@ if load_and_check and len(selection) == 2:
     except Exception as error:
         status_panel.render_exception(error, "FITS retrieval / validation")
 
+st.caption(
+    "Loading an epoch set retrieves and validates each selected FITS file. The separate two-observation comparison pair remains available "
+    "for the existing difference workflow; a 2-epoch analysis is always labelled 2-EPOCH-ONLY."
+)
+if st.button(
+    "LOAD AND VALIDATE SELECTED EPOCH SET",
+    key="load_multi_epoch_set",
+    use_container_width=True,
+    disabled=len(epoch_selection) < 2,
+):
+    products = dict(state.get("fits_products", {}))
+    product_manifest = dict(state.get("products", {}))
+    try:
+        with st.spinner(f"Retrieving and validating {len(epoch_selection)} selected epoch(s)…"):
+            for identifier in epoch_selection:
+                if identifier not in products:
+                    record = next(row for row in observations if row["id"] == identifier)
+                    products[identifier] = data_loader.load_observation_product(record)
+                product_manifest[identifier] = {"path": products[identifier].path, "sha256": products[identifier].sha256}
+        state.set_value("fits_products", products)
+        state.set_products(product_manifest)
+        state.set_value("selected_epoch_ids", list(epoch_selection))
+        if len(selection) == 2:
+            pair_records = [next(row for row in observations if row["id"] == identifier) for identifier in selection]
+            state.set_selected_pair(list(selection))
+            pair_check = wcs_alignment.check_observation_compatibility(
+                pair_records[0], pair_records[1], products[selection[0]], products[selection[1]],
+                state.get("processing_config", config.PROCESSING_DEFAULTS),
+            )
+            state.set_value("pair_check", pair_check)
+        st.success(f"Validated {len(epoch_selection)} epoch FITS product(s). Each file checksum is available in run provenance.")
+        st.rerun()
+    except Exception as error:
+        status_panel.render_exception(error, "Multi-epoch FITS retrieval / validation")
+
 products = state.get("fits_products", {})
 pair = state.get("selected_pair", [])
 check = state.get("pair_check")
@@ -147,6 +196,14 @@ if pair and all(identifier in products for identifier in pair):
             record = next(obs for obs in observations if obs["id"] == identifier)
             st.markdown(f"**Epoch {index} · {record.get('obs_id')} · {record.get('date_utc')}**")
             st.caption(f"{record.get('origin')} · release {record.get('release')} · plane {record.get('plane_id')} · calibration level {record.get('calibration_level')}")
+            record_position = product.metadata.get("record_position_icrs_deg")
+            requested_center = product.metadata.get("requested_field_center_icrs_deg")
+            st.caption(
+                f"Record position ({product.metadata.get('record_position_role', 'unspecified')}): "
+                f"{record_position if record_position else 'unavailable'} ICRS deg · requested field centre: "
+                f"{requested_center if requested_center else 'unavailable'} ICRS deg · FITS WCS cutout centre: "
+                f"{product.center_sky if product.center_sky else 'unavailable'} ICRS deg"
+            )
             st.dataframe(pd.DataFrame(product.validation), use_container_width=True, hide_index=True)
             st.caption(f"Extensions: {', '.join(product.extension_names)} · file {product.file_size_bytes:,} bytes · sha256 {product.sha256[:16]}…")
             if product.warnings:

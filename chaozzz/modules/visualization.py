@@ -66,11 +66,20 @@ def image_figure(
     figure = go.Figure()
     if wcs is not None and getattr(wcs, "has_celestial", False):
         try:
+            ny, nx = scaled.shape
+            x_pixels = np.arange(nx, dtype=float)
+            y_pixels = np.arange(ny, dtype=float)
+            centre_y = (ny - 1) / 2.0
+            centre_x = (nx - 1) / 2.0
+            x_world = wcs.pixel_to_world(x_pixels, np.full(nx, centre_y)).icrs.ra.deg
+            y_world = wcs.pixel_to_world(np.full(ny, centre_x), y_pixels).icrs.dec.deg
             x_axis = dict(title="RA (deg)", color="#8fa6c4")
             y_axis = dict(title="Dec (deg)", color="#8fa6c4")
             figure.add_trace(
                 go.Heatmap(
                     z=scaled,
+                    x=np.asarray(x_world, dtype=float),
+                    y=np.asarray(y_world, dtype=float),
                     colorscale=colormap,
                     showscale=False,
                     customdata=data,
@@ -99,10 +108,17 @@ def image_figure(
         figure.update_xaxes(title="x (pixel)", color="#8fa6c4")
         figure.update_yaxes(title="y (pixel)", color="#8fa6c4", scaleanchor="x", scaleratio=1)
     if marker:
+        marker_x, marker_y = marker.get("x"), marker.get("y")
+        if wcs is not None and getattr(wcs, "has_celestial", False) and marker_x is not None and marker_y is not None:
+            try:
+                world = wcs.pixel_to_world(float(marker_x), float(marker_y)).icrs
+                marker_x, marker_y = float(world.ra.deg), float(world.dec.deg)
+            except Exception:
+                pass
         figure.add_trace(
             go.Scatter(
-                x=[marker.get("x")],
-                y=[marker.get("y")],
+                x=[marker_x],
+                y=[marker_y],
                 mode="markers",
                 marker=dict(size=22, color="rgba(0,0,0,0)", line=dict(color="#46f0ff", width=2.5)),
                 hoverinfo="skip",

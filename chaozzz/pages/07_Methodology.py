@@ -22,6 +22,9 @@ STAGES = [
     ("SOURCE DETECTION", "Photutils peak detection on the SNR map (box-car, appropriate for an undersampled PSF), with ± dipoles merged so a shifted object is one record."),
     ("CATALOGUE CROSS-MATCH", "Cone search around each candidate in an IRSA-hosted survey table (2MASS PSC by default) to test whether the residual is a known object."),
     ("CANDIDATE INVESTIGATION", "Per-candidate measurements, quality flags, warnings and a plain-language explanation of why the record was flagged."),
+    ("MULTI-EPOCH SCREENING", "A separate path checks every selected epoch pair, detects peaks, associates sky positions, fits local linear motion when at least three detections support it, and saves its own provenance."),
+    ("OPTIONAL EXTERNAL EVIDENCE", "Gaia DR3 and IRSA catalogues add counterpart context; a user-supplied known-object query can test a JPL Horizons hypothesis. None of these calls makes a discovery."),
+    ("SPECTRAL QUICK-LOOK", "A validated mosaic or HiPS FITS cube can provide an aperture-minus-annulus spectrum. It is kept separate from time-domain motion measurements."),
 ]
 
 st.markdown("### The pipeline")
@@ -60,8 +63,34 @@ st.markdown(
 st.markdown("### Why more than two epochs matter")
 st.markdown(
     "Two epochs give one difference. A moving object should continue along a track and a variable object should repeat its behaviour; "
-    "an artifact usually does not. With two epochs the pipeline can only report displacement between the two measurements and flag whether "
-    "it exceeds the alignment tolerance. Multi-epoch tracking is the natural next step and is described in the README roadmap."
+    "an artifact usually does not. With two epochs the pair pipeline can only report displacement between two measurements. The separate "
+    "multi-epoch screen evaluates every selected pair for data mode, spectral compatibility and spatial overlap, then associates sky positions. "
+    "A motion classification requires at least three detections. Sparse sampling, peak positions and an uncalibrated uncertainty floor mean "
+    "that the fitted rate is a review lead, not an orbit or a confirmed moving object."
+)
+
+st.markdown("### Catalogue and known-object context")
+st.markdown(
+    "Gaia DR3 positions are propagated from the catalogue reference epoch using the reported linear proper motion, then compared at each "
+    "candidate observation epoch with an uncertainty-scaled radius. The current model does not apply parallax or radial-velocity perspective "
+    "effects. 2MASS PSC and AllWISE matches retain multiple counterparts and quality information; their positions are not propagated to each "
+    "SPHEREx epoch. JPL SBDB/Horizons is queried only for a known identifier supplied by the user. A positional match tests that hypothesis "
+    "and does not establish object identity; no match remains inconclusive."
+)
+
+st.markdown("### ePSF and spectral products")
+st.markdown(
+    "The official ePSF extension can be inspected by mapping an image position through its WCS to the parent detector zone. The model is "
+    "currently diagnostic: candidate fluxes are not ePSF fits, and the app does not perform PSF-matched differencing. A mosaic or HiPS cube "
+    "can be used for a quick-look aperture spectrum with annulus background subtraction and channel-quality diagnostics. This spectral "
+    "measurement is spatial/spectral context and is not an additional time-separated epoch."
+)
+
+st.markdown("### Controlled injection and recovery")
+st.markdown(
+    "The optional validation panel injects an uploaded detector-sampled kernel into a user-selected control image and reports recovery "
+    "fractions, unassociated peaks, a seed and input checksums. These results apply only to those settings. They are not a calibrated "
+    "completeness curve, false-positive probability or sensitivity improvement."
 )
 
 st.markdown("### Why a candidate is not a discovery")
@@ -82,6 +111,10 @@ st.dataframe(
         {"quantity": "Position angle", "units": "degrees east of north", "meaning": "Direction of that displacement on the sky."},
         {"quantity": "Δt", "units": "days", "meaning": "Separation between the archived observation times."},
         {"quantity": "Alignment tolerance", "units": "arcsec", "meaning": "1.5 × reprojected pixel scale; displacements below it are not treated as motion."},
+        {"quantity": "Multi-epoch angular rate", "units": "arcsec/day", "meaning": "Weighted local tangent-plane linear fit; requires at least three detections and uses a stated, currently uncalibrated positional uncertainty floor."},
+        {"quantity": "Gaia match radius", "units": "arcsec", "meaning": "Bounded radius based on Gaia propagated and candidate positional uncertainties at each measured epoch."},
+        {"quantity": "JPL angular separation", "units": "arcsec", "meaning": "Separation between a candidate coordinate and the Horizons ephemeris for a user-supplied known object at the recorded UTC-derived time."},
+        {"quantity": "Cube quick-look spectrum", "units": "FITS BUNIT by wavelength channel", "meaning": "Aperture flux minus annulus background at the cube WCS position; separate from time-domain evidence."},
     ],
     use_container_width=True, hide_index=True,
 )

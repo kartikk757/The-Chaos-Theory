@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go
 
 import config
 from components import metric_cards, navbar, sidebar, status_panel
-from modules import data_loader, irsa_client, state, visualization, wcs_alignment
+from modules import data_loader, hips_viewer, irsa_client, mosaic_cube, state, visualization, wcs_alignment
+import streamlit.components.v1 as components_v1
 
 sidebar.bootstrap_page(
     "Sky Explorer",
@@ -122,6 +124,14 @@ if submitted:
                 state.set_coverage(result["coverage_rows"], result["coverage_status"])
                 state.set_value("archive_status", result["archive_status"])
                 state.set_value("last_tap_diagnostics", result["tap_diagnostics"])
+                query_history = list(state.get("archive_query_history", []))
+                query_history.append({
+                    "queried_utc": result["archive_status"].get("utc"),
+                    "query": validated,
+                    "tap_diagnostics": result["tap_diagnostics"],
+                    "coverage_status": result["coverage_status"],
+                })
+                state.set_value("archive_query_history", query_history[-100:])
                 st.success(f"IRSA returned {len(result['observations'])} real SPHEREx observation records.")
             except Exception as error:
                 status_panel.render_exception(error, "IRSA archive query")
@@ -255,5 +265,75 @@ with st.expander("Query provenance and archive diagnostics", expanded=False):
         st.caption("No live TAP query has been executed in this session.")
     st.json(coverage_status or {"status": "not queried"})
     st.markdown("Verified documentation: " + " · ".join(f"[{doc['title']}]({doc['url']})" for doc in config.ARCHIVE_DOCS[:4]))
+
+st.markdown("### Optional SPHEREx HiPS all-sky context")
+st.caption(
+    "This browser viewer displays the official SPHEREx all-sky HiPS cube as context. It is a visualization mosaic, not an additional "
+    "time-separated epoch. HiPS tiles and Aladin Lite are loaded by your browser from their public services."
+)
+if st.button("OPEN SPHEREx HiPS VIEWER", key="open_spherex_hips"):
+    try:
+        hips_properties = hips_viewer.fetch_properties()
+        st.session_state["spherex_hips_properties"] = hips_properties
+        try:
+            index = hips_viewer.healpix_nested_index(
+                float(current.get("ra_deg", config.DEFAULT_QUERY["ra_deg"])),
+                float(current.get("dec_deg", config.DEFAULT_QUERY["dec_deg"])),
+                int(hips_properties.get("hips_order", 5)),
+            )
+            st.session_state["spherex_hips_pixel"] = index
+            st.session_state.pop("spherex_hips_index_error", None)
+        except Exception as index_error:
+            st.session_state["spherex_hips_index_error"] = str(index_error)
+        st.session_state["spherex_hips_open"] = True
+    except Exception as error:
+        st.error(f"SPHEREx HiPS metadata could not be loaded: {error}")
+if st.session_state.get("spherex_hips_open"):
+    hips_properties = st.session_state.get("spherex_hips_properties", {})
+    st.caption(
+        f"HiPS order {hips_properties.get('hips_order', 'metadata unavailable')} · center "
+        f"{float(current.get('ra_deg', config.DEFAULT_QUERY['ra_deg'])):.5f}°, "
+        f"{float(current.get('dec_deg', config.DEFAULT_QUERY['dec_deg'])):.5f}° · "
+        f"field of view {float(current.get('radius_deg', 0.05)) * 2:.3f}°"
+    )
+    if st.session_state.get("spherex_hips_pixel") is not None:
+        st.caption(f"Nested HEALPix index at selected centre: {st.session_state['spherex_hips_pixel']}")
+    elif st.session_state.get("spherex_hips_index_error"):
+        st.info(st.session_state.pop("spherex_hips_index_error"))
+    components_v1.html(
+        hips_viewer.aladin_lite_html(
+            float(current.get("ra_deg", config.DEFAULT_QUERY["ra_deg"])),
+            float(current.get("dec_deg", config.DEFAULT_QUERY["dec_deg"])),
+            float(current.get("radius_deg", 0.05)) * 2,
+        ),
+        height=510,
+        scrolling=False,
+    )
+    with st.expander("HiPS cube metadata", expanded=False):
+        st.json({key: hips_properties.get(key) for key in (
+            "obs_title", "obs_description", "hips_order_min", "hips_order", "hips_cube_depth", "data_cube_crval3_arr", "hips_data_url"
+        )})
+    if st.button("FETCH LOCAL HiPS FITS CUBE AND EXTRACT QUICK-LOOK SPECTRUM", key="fetch_hips_cube"):
+        try:
+            ra_query = float(current.get("ra_deg", config.DEFAULT_QUERY["ra_deg"]))
+            dec_query = float(current.get("dec_deg", config.DEFAULT_QUERY["dec_deg"]))
+            cube_reference = hips_viewer.hips_cube_url(ra_query, dec_query, properties=hips_properties)
+            with st.spinner("Downloading the SPHEREx HiPS FITS tile (up to 200 MiB)…"):
+                cube_bytes, download_info = hips_viewer.fetch_cube_bytes(cube_reference["url"])
+            cube_product = mosaic_cube.load_cube(cube_bytes, cube_reference["url"].rsplit("/", 1)[-1])
+            spectrum = mosaic_cube.extract_aperture_spectrum(cube_product, ra_query, dec_query)
+            state.set_value("hips_quicklook_spectrum", {"cube_reference": cube_reference, "download": download_info, "spectrum": spectrum})
+        except Exception as error:
+            st.error(f"SPHEREx HiPS cube retrieval or extraction failed: {error}")
+    hips_spectrum = state.get("hips_quicklook_spectrum") or {}
+    if hips_spectrum.get("spectrum"):
+        spectrum = hips_spectrum["spectrum"]
+        st.success(f"Retrieved HiPS tile Norder {hips_spectrum['cube_reference']['order']} / Npix {hips_spectrum['cube_reference']['ipix_nested']} · SHA-256 {hips_spectrum['download']['sha256'][:16]}…")
+        fig = go.Figure(go.Scatter(x=spectrum["wavelength_um"], y=spectrum["flux"], mode="lines+markers", name="HiPS aperture quick-look"))
+        fig.update_layout(title="SPHEREx HiPS cube visualization spectrum", xaxis_title="Wavelength (µm)", yaxis_title=spectrum["flux_unit"], template="plotly_dark", height=380)
+        st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
+        st.caption("IRSA documents this All-Sky cube spectrum as visualization-only. It is not a substitute for time-separated spectral images or the SPHEREx spectrophotometry product.")
+        with st.expander("HiPS tile and spectrum provenance", expanded=False):
+            st.json({"tile": hips_spectrum["cube_reference"], "download": hips_spectrum["download"], "spectrum": {key: value for key, value in spectrum.items() if key not in ("wavelength_um", "flux", "background_per_pixel", "flux_error", "valid_fraction")}})
 
 navbar.render_footer()

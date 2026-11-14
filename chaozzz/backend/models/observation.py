@@ -44,6 +44,7 @@ class ObservationRecord:
     is_real_spherex: bool = False
     is_demo: bool = False
     coordinates_source: str = ""
+    coordinates_role: str = "recorded_observation_position"
     metadata: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
@@ -78,6 +79,7 @@ class ObservationRecord:
             is_real_spherex=bool(record.get("is_real_spherex", False)),
             is_demo=bool(record.get("is_demo", False)),
             coordinates_source=str(record.get("coordinates_source") or ""),
+            coordinates_role=str(record.get("coordinates_role") or "recorded_observation_position"),
             metadata=dict(record.get("metadata") or {}),
             warnings=list(record.get("warnings") or []),
         )
@@ -109,6 +111,7 @@ class ObservationRecord:
             "is_demo": self.is_demo,
             "access_url": self.cutout_url or self.full_fits_url or None,
             "coordinates_source": self.coordinates_source,
+            "coordinates_role": self.coordinates_role,
             "warnings": self.warnings,
         }
 

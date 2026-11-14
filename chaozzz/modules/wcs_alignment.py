@@ -12,6 +12,7 @@ from astropy.coordinates import SkyCoord
 from reproject import reproject_interp
 
 import config
+from modules import coordinates
 from modules.models import AlignedPair, FitsProduct
 
 
@@ -105,18 +106,29 @@ def check_observation_compatibility(
     if record1.get("quality_flag") or record2.get("quality_flag"):
         warnings_out.append("At least one archive plane supplies a quality_flag; inspect it in Data Explorer.")
 
-    separation = None
+    record_position_separation = None
     footprint_separation = None
-    if record1.get("ra_deg") is not None and record2.get("ra_deg") is not None and record1.get("dec_deg") is not None and record2.get("dec_deg") is not None:
+    coord1 = coordinates.coordinate_context(record1)
+    coord2 = coordinates.coordinate_context(record2)
+    record_sky1 = coord1.get("record_position_icrs_deg")
+    record_sky2 = coord2.get("record_position_icrs_deg")
+    if record_sky1 is not None and record_sky2 is not None:
         try:
-            c1 = SkyCoord(float(record1["ra_deg"]) * u.deg, float(record1["dec_deg"]) * u.deg, frame="icrs")
-            c2 = SkyCoord(float(record2["ra_deg"]) * u.deg, float(record2["dec_deg"]) * u.deg, frame="icrs")
-            footprint_separation = float(c1.separation(c2).arcsec)
+            c1 = SkyCoord(float(record_sky1[0]) * u.deg, float(record_sky1[1]) * u.deg, frame="icrs")
+            c2 = SkyCoord(float(record_sky2[0]) * u.deg, float(record_sky2[1]) * u.deg, frame="icrs")
+            record_position_separation = float(c1.separation(c2).arcsec)
+            if (
+                coord1["record_position_role"] == "parent_observation_footprint_center"
+                and coord2["record_position_role"] == "parent_observation_footprint_center"
+            ):
+                footprint_separation = record_position_separation
         except Exception:
+            record_position_separation = None
             footprint_separation = None
 
-    # What matters for a difference image is the separation of the cutout centres,
-    # not the centre of each parent observation footprint.
+    # Difference geometry always uses the delivered FITS WCS centres. Record and
+    # parent-footprint positions are provenance only and never substitute for them.
+    separation = None
     cutout_centres = [product1.center_sky, product2.center_sky]
     if all(centre is not None for centre in cutout_centres) and product1.pixel_scale_arcsec and product2.pixel_scale_arcsec:
         try:
@@ -152,6 +164,7 @@ def check_observation_compatibility(
         "wavelength_delta_um": delta,
         "wavelength_tolerance_um": tolerance,
         "center_separation_arcsec": separation,
+        "record_position_separation_arcsec": record_position_separation,
         "footprint_center_separation_arcsec": footprint_separation,
         "time_separation_days": (
             abs(float(record2["mjd"]) - float(record1["mjd"]))

@@ -25,14 +25,21 @@ def _defaults() -> dict[str, Any]:
         "observations": [],
         "coverage_rows": [],
         "coverage_status": {"status": "not queried", "detail": ""},
+        "archive_query_history": [],
         "archive_status": {"status": "not checked", "detail": "Use Sky Explorer to query IRSA."},
         "selected_observation_ids": [],
+        "selected_epoch_ids": [],
         "selected_pair": [],
         "loaded_products": {},
         "fits_products": {},
         "pair_check": None,
         "processing_config": copy.deepcopy(config.PROCESSING_DEFAULTS),
         "comparison": None,
+        "multi_epoch_result": None,
+        "temporal_pair_comparison": None,
+        "sdt_comparison": None,
+        "injection_recovery_report": None,
+        "jpl_candidate_result": None,
         "candidates": [],
         "selected_candidate_id": None,
         "provenance": None,
@@ -94,11 +101,17 @@ def clear_results(keep_observations: bool = False) -> None:
         set_value("coverage_rows", [])
         set_value("coverage_status", {"status": "not queried", "detail": ""})
     set_value("selected_observation_ids", [])
+    set_value("selected_epoch_ids", [])
     set_value("selected_pair", [])
     set_value("loaded_products", {})
     set_value("fits_products", {})
     set_value("pair_check", None)
     set_value("comparison", None)
+    set_value("multi_epoch_result", None)
+    set_value("temporal_pair_comparison", None)
+    set_value("sdt_comparison", None)
+    set_value("injection_recovery_report", None)
+    set_value("jpl_candidate_result", None)
     set_value("candidates", [])
     set_value("selected_candidate_id", None)
     set_value("provenance", None)

@@ -175,8 +175,12 @@ def pixel_scale_arcsec(wcs: WCS | None) -> float | None:
 
 
 def center_sky(wcs: WCS | None, shape: tuple[int, int], center_ra: float | None = None, center_dec: float | None = None) -> tuple[float, float] | None:
-    if center_ra is not None and center_dec is not None:
-        return float(center_ra), float(center_dec)
+    """Return the world coordinate at the geometric centre of the FITS array.
+
+    ``center_ra`` and ``center_dec`` are retained for call compatibility, but
+    archive/query coordinates must not override the delivered image WCS centre.
+    Those coordinates are stored separately as observation metadata.
+    """
     if wcs is None:
         return None
     try:

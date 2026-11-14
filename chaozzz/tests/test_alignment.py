@@ -105,3 +105,17 @@ def test_pixel_scale_is_measured_from_wcs(demo_products):
     scale = demo_products[0].pixel_scale_arcsec
     assert scale is not None
     assert 5.0 < scale < 8.0
+
+
+def test_parent_footprint_separation_does_not_replace_cutout_wcs_centres(demo_pair, demo_products):
+    records, _ = demo_pair
+    record1, record2 = copy.deepcopy(records)
+    record1.update(ra_deg=5.0, dec_deg=0.0, coordinates_role="parent_observation_footprint_center")
+    record2.update(ra_deg=15.0, dec_deg=0.0, coordinates_role="parent_observation_footprint_center")
+    result = wcs_alignment.check_observation_compatibility(
+        record1, record2, demo_products[0], demo_products[1], dict(config.PROCESSING_DEFAULTS)
+    )
+
+    assert result["compatible"] is True
+    assert result["center_separation_arcsec"] < 1.0
+    assert result["footprint_center_separation_arcsec"] > 30_000

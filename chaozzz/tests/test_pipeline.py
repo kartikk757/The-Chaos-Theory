@@ -43,6 +43,11 @@ def test_pipeline_labels_data_mode_and_writes_provenance(demo_result):
     assert record["data_mode"] == config.DATA_MODES["DEMO"]
     assert len(record["inputs"]) == 2
     assert all(item["sha256"] for item in record["inputs"])
+    coordinates = record["inputs"][0]["coordinate_provenance"]
+    assert coordinates["coordinate_frame"] == "ICRS"
+    assert coordinates["record_position_role"] == "synthetic_image_reference_center"
+    assert coordinates["delivered_cutout_geometric_center_icrs_deg"] is not None
+    assert coordinates["delivered_cutout_center_definition"].startswith("FITS WCS")
     assert record["processing_config"]["detection_sigma"] == cfg["detection_sigma"]
     assert "not an official nasa product" in record["attribution"]["notice"].lower()
     path = config.OUTPUT_DIR / "runs" / f"{record['run_id']}.json"

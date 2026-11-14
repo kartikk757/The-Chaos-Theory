@@ -31,13 +31,18 @@ for _directory in (
 
 APP_TITLE = "THE CHAOS THEORY"
 APP_TAGLINE = "Explore the Universe. Detect the Unexpected."
-APP_VERSION = "1.0.0-hackathon"
+APP_VERSION = "1.1.0-science-integration"
 
 # Verified official service endpoints.
 IRSA_TAP_SYNC = "https://irsa.ipac.caltech.edu/TAP/sync"
 IRSA_SIA2 = "https://irsa.ipac.caltech.edu/SIA"
 IRSA_CUTOUT_ROOT = "https://irsa.ipac.caltech.edu/"
 IRSA_SPHEREX_IBE_ROOT = "https://irsa.ipac.caltech.edu/ibe/data/spherex/"
+GAIA_TAP_SYNC = "https://gea.esac.esa.int/tap-server/tap/sync"
+JPL_SBDB_API = "https://ssd-api.jpl.nasa.gov/sbdb.api"
+JPL_HORIZONS_API = "https://ssd.jpl.nasa.gov/api/horizons.api"
+SPHEREX_HIPS_ROOT = "https://irsa.ipac.caltech.edu/data/hips/SPHEREx/spherex_allsky_cube"
+SPHEREX_HIPS_DATA_ROOT = "https://irsa.ipac.caltech.edu/ibe/data/spherex/dr1/hips5_cube/hips_20261026"
 
 # Official SIA2 collections (SPHEREx Data Access, updated 2026-11-12).
 SIA2_COLLECTIONS = {
@@ -110,6 +115,7 @@ PROCESSING_DEFAULTS = {
     "max_candidates": 40,
     "max_flag_fraction": 0.20,
     "crossmatch_enabled": True,
+    "gaia_crossmatch_enabled": True,
     "crossmatch_catalogue": "2MASS Point Source Catalog (IRSA TAP fp_psc)",
     "crossmatch_radius_arcsec": 6.0,
     "catalogue_cone_radius_deg": 0.08,
@@ -154,6 +160,38 @@ ARCHIVE_DOCS = [
     {
         "title": "NASA SPHEREx mission",
         "url": "https://science.nasa.gov/mission/spherex/",
+    },
+    {
+        "title": "ESA Gaia DR3 gaia_source data model",
+        "url": "https://gea.esac.esa.int/archive/documentation/GDR3/Gaia_archive/chap_datamodel/sec_dm_main_source_catalogue/ssec_dm_gaia_source.html",
+    },
+    {
+        "title": "ESA Gaia DR3 astrometric propagation and error propagation",
+        "url": "https://gea.esac.esa.int/archive/documentation/GDR3/Data_processing/chap_cu3ast/sec_cu3ast_intro/ssec_cu3ast_intro_tansforms.html",
+    },
+    {
+        "title": "IRSA SPHEREx ePSF tutorial",
+        "url": "https://caltech-ipac.github.io/irsa-tutorials/spherex-psf/",
+    },
+    {
+        "title": "IRSA SPHEREx Source Discovery Tool tutorial",
+        "url": "https://caltech-ipac.github.io/irsa-tutorials/spherex-source-discovery-tool-demo/",
+    },
+    {
+        "title": "JPL Small-Body Database API",
+        "url": "https://ssd-api.jpl.nasa.gov/doc/sbdb.html",
+    },
+    {
+        "title": "JPL Horizons API",
+        "url": "https://ssd-api.jpl.nasa.gov/doc/horizons.html",
+    },
+    {
+        "title": "IRSA SPHEREx Mosaic Cube tutorial",
+        "url": "https://caltech-ipac.github.io/irsa-tutorials/spherex-mosaic/",
+    },
+    {
+        "title": "IRSA SPHEREx HiPS All-Sky Cube tutorial",
+        "url": "https://caltech-ipac.github.io/irsa-tutorials/spherex-hipscube/",
     },
 ]
 

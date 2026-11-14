@@ -17,7 +17,8 @@ from astropy.io import fits
 from astropy.time import Time
 
 import config
-from modules import fits_processor, provenance
+from modules import coordinates, fits_processor, provenance
+from modules.network_guard import wait_for_service
 from modules.models import FitsProduct
 
 
@@ -48,6 +49,7 @@ def fetch_cutout_path(url: str, force: bool = False, max_bytes: int = config.MAX
     last_error: Exception | None = None
     for attempt in range(3):
         try:
+            wait_for_service("irsa_cutout", 0.5)
             response = requests.get(url, stream=True, timeout=config.REQUEST_TIMEOUT_SECONDS)
             response.raise_for_status()
             declared = int(response.headers.get("Content-Length") or 0)
@@ -117,18 +119,22 @@ def _load_product_impl(path: str, file_sha256: str, center_ra: float | None, cen
         )
         warnings_out.extend(spectral_warnings)
         center_world = fits_processor.center_sky(wcs, image.shape)
+        coordinate_info = coordinates.coordinate_context(record)
+        requested_sky = coordinate_info.get("requested_field_center_icrs_deg")
         requested_px = None
-        if wcs is not None and center_ra is not None and center_dec is not None:
+        if wcs is not None and requested_sky is not None:
             try:
                 from astropy.coordinates import SkyCoord as _SkyCoord
 
-                x_req, y_req = wcs.world_to_pixel(_SkyCoord(float(center_ra), float(center_dec), unit="deg", frame="icrs"))
+                x_req, y_req = wcs.world_to_pixel(
+                    _SkyCoord(float(requested_sky[0]), float(requested_sky[1]), unit="deg", frame="icrs")
+                )
                 if -0.5 <= x_req <= image.shape[1] - 0.5 and -0.5 <= y_req <= image.shape[0] - 0.5:
                     requested_px = (float(x_req), float(y_req))
                 else:
                     warnings_out.append(
-                        "The archive record's coordinates lie outside the delivered cutout; they describe the parent "
-                        "observation footprint centre, not the position sampled by this cutout."
+                        "The requested field centre lies outside the delivered cutout; it is retained as query provenance, "
+                        "while cutout geometry is measured from the FITS WCS."
                     )
             except Exception:
                 requested_px = None
@@ -144,6 +150,7 @@ def _load_product_impl(path: str, file_sha256: str, center_ra: float | None, cen
             warnings_out.append("Central wavelength was not recomputed after cropping; spectral compatibility is unverified.")
             wcs = cropped_wcs
             center_px = cropped_center
+        original_shape = image.shape
         image = cropped["image"]
         flags = cropped["flags"]
         variance = cropped["variance"]
@@ -185,8 +192,17 @@ def _load_product_impl(path: str, file_sha256: str, center_ra: float | None, cen
         "wavelength_sample_pixel": [image_center_px[0], image_center_px[1]],
         "wavelength_sample_note": "WCS-WAVE evaluated at the geometric centre of the delivered cutout array.",
         "requested_position_pixel": list(requested_px) if requested_px else None,
-        "archive_record_sky": [center_ra, center_dec] if center_ra is not None and center_dec is not None else None,
+        "record_position_icrs_deg": coordinate_info.get("record_position_icrs_deg"),
+        "record_position_role": coordinate_info.get("record_position_role"),
+        "record_position_source": coordinate_info.get("record_position_source"),
+        "requested_field_center_icrs_deg": requested_sky,
+        "requested_field_center_source": coordinate_info.get("requested_field_center_source"),
+        "coordinate_frame": coordinate_info.get("coordinate_frame", "ICRS"),
         "cutout_center_sky": list(center_world) if center_world else None,
+        "crop_origin_pixel": [
+            float((original_shape[1] - image.shape[1]) / 2.0) if crop_warnings else 0.0,
+            float((original_shape[0] - image.shape[0]) / 2.0) if crop_warnings else 0.0,
+        ],
         "extension_names": extension_names,
         "primary_version": primary_header.get("VERSION", ""),
         "loaded_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -336,6 +352,7 @@ def make_local_observation(upload: dict, product: FitsProduct, index: int) -> di
         "central_wavelength_um": product.center_wavelength_um,
         "central_bandwidth_um": product.center_bandwidth_um,
         "coordinates_source": "FITS WCS image centre" if product.wcs is not None else "not available",
+        "coordinates_role": "fits_wcs_image_center" if product.wcs is not None else "unavailable",
         "metadata": {"upload": upload, "header_keys": sorted(header.keys()), "sha256": upload["sha256"]},
         "warnings": warnings,
     }
@@ -353,6 +370,19 @@ def load_cached_real_bundle() -> tuple[list[dict], dict]:
         if checksum != record.get("derived_sha256"):
             record.setdefault("warnings", []).append("Cached file checksum differs from manifest; reload from IRSA before scientific use.")
         record["cached_path"] = str(path)
+        source = str(record.get("coordinates_source") or "")
+        record.setdefault(
+            "coordinates_role",
+            "parent_observation_footprint_center" if "SIA2" in source or "footprint" in source.lower()
+            else "requested_field_center" if "requested" in source.lower()
+            else "recorded_observation_position",
+        )
+        # Older manifests store the requested field only in the IRSA cutout URL.
+        # Preserve it explicitly for future offline loads and provenance exports.
+        coordinate_info = coordinates.coordinate_context(record)
+        requested = coordinate_info.get("requested_field_center_icrs_deg")
+        if requested:
+            coordinates.attach_requested_field_center(record, requested[0], requested[1])
         record["data_mode"] = config.DATA_MODES["CACHED_REAL"]
         record["is_real_spherex"] = True
         record["is_demo"] = False

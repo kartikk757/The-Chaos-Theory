@@ -274,7 +274,21 @@ def analyse_candidates(
             "epoch_sources_found": [len(sources1), len(sources2)],
             "delta_days": delta_days,
             "aperture_radius_px": cfg["aperture_radius_px"],
+            "position_sigma_arcsec": max(float(aligned.pixel_scale_arcsec or 6.15) / 2.0, float(record1.get("position_resolution_arcsec") or 0.0)),
         })
+
+        def epoch_position(match):
+            px = float(match["x"]) if match else x
+            py = float(match["y"]) if match else y
+            try:
+                sky_position = aligned.target_wcs.pixel_to_world(px, py).icrs
+                return float(sky_position.ra.deg), float(sky_position.dec.deg), px, py
+            except Exception:
+                return ra, dec, px, py
+
+        epoch1_ra, epoch1_dec, epoch1_x, epoch1_y = epoch_position(match1)
+        epoch2_ra, epoch2_dec, epoch2_x, epoch2_y = epoch_position(match2)
+        position_sigma = quality["position_sigma_arcsec"]
         candidate = Candidate(
             candidate_id=f"CAND-{index:03d}",
             pixel_x=x,
@@ -298,6 +312,12 @@ def analyse_candidates(
                     "id": record1.get("id"),
                     "date_utc": record1.get("date_utc"),
                     "mjd": record1.get("mjd"),
+                    "ra_deg": epoch1_ra,
+                    "dec_deg": epoch1_dec,
+                    "x_pixel": epoch1_x,
+                    "y_pixel": epoch1_y,
+                    "matched_source": match1 is not None,
+                    "position_sigma_arcsec": position_sigma,
                     "band": record1.get("band"),
                     "origin": record1.get("origin"),
                     "release": record1.get("release"),
@@ -306,6 +326,12 @@ def analyse_candidates(
                     "id": record2.get("id"),
                     "date_utc": record2.get("date_utc"),
                     "mjd": record2.get("mjd"),
+                    "ra_deg": epoch2_ra,
+                    "dec_deg": epoch2_dec,
+                    "x_pixel": epoch2_x,
+                    "y_pixel": epoch2_y,
+                    "matched_source": match2 is not None,
+                    "position_sigma_arcsec": position_sigma,
                     "band": record2.get("band"),
                     "origin": record2.get("origin"),
                     "release": record2.get("release"),
@@ -315,6 +341,7 @@ def analyse_candidates(
                 "angular_displacement_arcsec": displacement_arcsec,
                 "position_angle_deg": position_angle_deg,
                 "delta_time_days": delta_days,
+                "position_sigma_arcsec": position_sigma,
                 "units": {
                     "flux": "Jy",
                     "surface_brightness": "MJy/sr",

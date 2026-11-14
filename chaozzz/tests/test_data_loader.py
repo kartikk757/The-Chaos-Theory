@@ -103,3 +103,25 @@ def test_wavelength_sampled_at_cutout_centre_not_archive_footprint(demo_products
     assert product.metadata["wavelength_sample_pixel"] == [47.5, 47.5]
     assert product.is_demo is True
     assert product.is_real_spherex is False
+
+
+def test_parent_footprint_and_requested_field_are_separate_from_cutout_wcs(toy_fits):
+    record = {
+        "id": "TEST-FOOTPRINT-COORDS",
+        "cached_path": str(toy_fits),
+        "data_mode": config.DATA_MODES["LOCAL"],
+        "ra_deg": 151.0,
+        "dec_deg": 3.0,
+        "coordinates_source": "SIA2 s_ra/s_dec (observation footprint centre)",
+        "coordinates_role": "parent_observation_footprint_center",
+        "cutout_url": "https://irsa.ipac.caltech.edu/ibe/example.fits?center=150.0,2.0d&size=0.1",
+    }
+    product = data_loader.load_observation_product(record)
+    expected_cutout_center = product.wcs.pixel_to_world(15.5, 15.5)
+
+    assert product.center_sky == pytest.approx((expected_cutout_center.ra.deg, expected_cutout_center.dec.deg))
+    assert product.center_sky != pytest.approx((record["ra_deg"], record["dec_deg"]))
+    assert product.metadata["record_position_icrs_deg"] == [151.0, 3.0]
+    assert product.metadata["record_position_role"] == "parent_observation_footprint_center"
+    assert product.metadata["requested_field_center_icrs_deg"] == [150.0, 2.0]
+    assert product.metadata["requested_position_pixel"] == pytest.approx([15.0, 15.0])

@@ -25,6 +25,8 @@ from astropy.coordinates import Angle, SkyCoord
 from astropy.time import Time
 
 import config
+from modules import coordinates
+from modules.network_guard import wait_for_service
 
 
 class ArchiveError(RuntimeError):
@@ -51,14 +53,28 @@ def _http_get_text(url: str, params: dict, timeout: int, cache_ttl: int = config
         except (OSError, ValueError, KeyError, TypeError):
             pass
     started = time.time()
-    response = requests.get(url, params=params, timeout=timeout)
+    response = None
+    last_error = None
+    service = "irsa_sia2" if "sia" in url.lower() else "irsa_tap"
+    for attempt in range(2):
+        wait_for_service(service, 0.5)
+        try:
+            response = requests.get(url, params=params, timeout=timeout)
+            response.raise_for_status()
+            break
+        except requests.RequestException as exc:
+            last_error = exc
+            status_code = getattr(exc.response, "status_code", 0) or 0
+            if attempt == 1 or (status_code and status_code < 500):
+                if isinstance(exc, requests.HTTPError):
+                    raise ArchiveError(
+                        f"{urlparse(url).netloc} returned HTTP {status_code}: {exc.response.text[:300]}"
+                    ) from exc
+                raise ArchiveError(f"{urlparse(url).netloc} request failed: {exc}") from exc
+            time.sleep(0.4)
+    if response is None:
+        raise ArchiveError(f"{urlparse(url).netloc} request failed: {last_error}") from last_error
     elapsed = round(time.time() - started, 3)
-    try:
-        response.raise_for_status()
-    except requests.HTTPError as exc:
-        raise ArchiveError(
-            f"{urlparse(url).netloc} returned HTTP {response.status_code}: {response.text[:300]}"
-        ) from exc
     text = response.text
     if not text.strip():
         raise ArchiveError(f"{url} returned an empty response")
@@ -317,6 +333,7 @@ def build_observation_record(row: dict) -> dict:
         "central_wavelength_um": None,
         "central_bandwidth_um": None,
         "coordinates_source": "requested field centre (no SIA2 footprint match)",
+        "coordinates_role": "requested_field_center",
         "metadata": {"tap_row": dict(row), "sia2_match": False},
         "warnings": warnings,
     }
@@ -405,6 +422,8 @@ def enrich_observations_with_sia2(observations: list[dict], coverage_rows: list[
     for obs in observations:
         obs["ra_deg"] = ra_deg
         obs["dec_deg"] = dec_deg
+        obs["coordinates_role"] = "requested_field_center"
+        coordinates.attach_requested_field_center(obs, ra_deg, dec_deg)
         candidates = by_key.get((obs.get("full_fits_url", ""), obs.get("band", "")), [])
         match = None
         if candidates:
@@ -418,6 +437,7 @@ def enrich_observations_with_sia2(observations: list[dict], coverage_rows: list[
             if s_ra is not None and s_dec is not None:
                 obs["ra_deg"], obs["dec_deg"] = s_ra, s_dec
                 obs["coordinates_source"] = "SIA2 s_ra/s_dec (observation footprint centre)"
+                obs["coordinates_role"] = "parent_observation_footprint_center"
             obs["obs_id"] = str(match.get("obs_id") or obs["obs_id"])
             obs["obs_collection"] = str(match.get("obs_collection") or "")
             obs["s_fov_deg"] = _float_or_none(match.get("s_fov"))

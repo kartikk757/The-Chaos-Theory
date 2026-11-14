@@ -13,7 +13,7 @@ import numpy as np
 import streamlit as st
 
 import config
-from modules import candidate_analysis, catalogue_matching, data_loader, difference_engine
+from modules import candidate_analysis, catalogue_matching, coordinates, data_loader, difference_engine, gaia_client
 from modules import image_normalization, provenance, source_detection, wcs_alignment
 
 
@@ -186,7 +186,13 @@ def _run_pipeline(record1: dict, record2: dict, cfg: dict, catalogue_key: str) -
                     catalogue_key, float(centre[0]), float(centre[1]), float(cfg["catalogue_cone_radius_deg"])
                 )
                 crossmatch = catalogue_matching.cross_match_candidates(
-                    candidates, rows, radius_arcsec=float(cfg["crossmatch_radius_arcsec"])
+                    candidates,
+                    rows,
+                    radius_arcsec=float(cfg["crossmatch_radius_arcsec"]),
+                    candidate_sigma_arcsec=max(
+                        float(product1.pixel_scale_arcsec or 6.15) / 2.0,
+                        float(record1.get("position_resolution_arcsec") or 0.0),
+                    ),
                 )
                 matched = sum(1 for value in crossmatch.values() if value["status"] == "matched")
                 stage("Catalogue cross-match", "ok", f"{matched}/{len(candidates)} candidate(s) matched in {catalogue_diagnostics['catalogue']}.")
@@ -203,6 +209,45 @@ def _run_pipeline(record1: dict, record2: dict, cfg: dict, catalogue_key: str) -
     else:
         stage("Catalogue cross-match", "ok" if not candidates else "warn", catalogue_diagnostics["detail"])
 
+    gaia_crossmatch: dict[str, dict] = {}
+    gaia_diagnostics: dict = {"status": "disabled", "detail": "Gaia DR3 cross-match disabled in processing configuration."}
+    if cfg.get("gaia_crossmatch_enabled") and candidates:
+        center = product1.center_sky
+        if center is not None:
+            try:
+                candidate_sigma = max(
+                    float(product1.pixel_scale_arcsec or 6.15) / 2.0,
+                    float(record1.get("position_resolution_arcsec") or 0.0),
+                )
+                gaia_crossmatch, gaia_diagnostics = gaia_client.cross_match_with_gaia(
+                    candidates,
+                    fallback_mjd=record1.get("mjd"),
+                    center_ra_deg=float(center[0]),
+                    center_dec_deg=float(center[1]),
+                    fallback_position_sigma_arcsec=candidate_sigma,
+                    cfg=cfg,
+                )
+                matched = sum(1 for value in gaia_crossmatch.values() if value.get("status") == "matched")
+                stage(
+                    "Gaia DR3 cross-match",
+                    "ok" if gaia_diagnostics.get("status") == "ok" else "warn",
+                    f"{matched}/{len(candidates)} candidate(s) matched after Gaia proper-motion propagation to the observation epoch.",
+                    diagnostics=gaia_diagnostics,
+                    results=gaia_crossmatch,
+                )
+            except Exception as exc:
+                gaia_diagnostics = {"status": "failed", "detail": str(exc), "catalogue": "Gaia DR3"}
+                gaia_crossmatch = {
+                    candidate.candidate_id: {"status": "unavailable", "matches": [], "detail": f"Gaia DR3 service failed: {exc}"}
+                    for candidate in candidates
+                }
+                stage("Gaia DR3 cross-match", "warn", f"Gaia DR3 cross-match unavailable: {exc}", diagnostics=gaia_diagnostics)
+        else:
+            gaia_diagnostics = {"status": "skipped", "detail": "FITS WCS centre unavailable for the Gaia DR3 cone search."}
+            stage("Gaia DR3 cross-match", "warn", gaia_diagnostics["detail"])
+    else:
+        stage("Gaia DR3 cross-match", "ok" if not candidates else "warn", gaia_diagnostics["detail"])
+
     inputs = [
         {
             "role": "epoch 1",
@@ -216,6 +261,7 @@ def _run_pipeline(record1: dict, record2: dict, cfg: dict, catalogue_key: str) -
             "central_wavelength_um": product1.center_wavelength_um,
             "central_bandwidth_um": product1.center_bandwidth_um,
             "data_mode": record1.get("data_mode"),
+            "coordinate_provenance": _coordinate_provenance(record1, product1),
         },
         {
             "role": "epoch 2",
@@ -229,6 +275,7 @@ def _run_pipeline(record1: dict, record2: dict, cfg: dict, catalogue_key: str) -
             "central_wavelength_um": product2.center_wavelength_um,
             "central_bandwidth_um": product2.center_bandwidth_um,
             "data_mode": record2.get("data_mode"),
+            "coordinate_provenance": _coordinate_provenance(record2, product2),
         },
     ]
     provenance_record = provenance.build_provenance(
@@ -248,11 +295,15 @@ def _run_pipeline(record1: dict, record2: dict, cfg: dict, catalogue_key: str) -
             "disclaimer": "Candidate records are screening results from two observations, not discoveries.",
         },
     )
+    provenance_record["external_catalogues"] = {
+        "IRSA": {"diagnostics": catalogue_diagnostics, "matches": crossmatch},
+        "Gaia DR3": {"diagnostics": gaia_diagnostics, "matches": gaia_crossmatch},
+    }
     provenance.write_json(config.OUTPUT_DIR / "runs" / f"{run_id}.json", provenance_record)
     if candidates:
         export_rows = []
         for candidate in candidates:
-            values = _candidate_row(candidate, crossmatch.get(candidate.candidate_id))
+            values = _candidate_row(candidate, crossmatch.get(candidate.candidate_id), gaia_crossmatch.get(candidate.candidate_id))
             export_rows.append(values)
         _write_candidates_csv(export_rows, run_id, record1, record2)
     return {
@@ -269,6 +320,8 @@ def _run_pipeline(record1: dict, record2: dict, cfg: dict, catalogue_key: str) -
         "candidate_summary": candidate_summary,
         "crossmatch": crossmatch,
         "catalogue_diagnostics": catalogue_diagnostics,
+        "gaia_crossmatch": gaia_crossmatch,
+        "gaia_diagnostics": gaia_diagnostics,
         "provenance": provenance_record,
         "stages": stages,
         "warnings": warnings_out,
@@ -277,9 +330,23 @@ def _run_pipeline(record1: dict, record2: dict, cfg: dict, catalogue_key: str) -
     }
 
 
-def _candidate_row(candidate, crossmatch: dict | None) -> dict:
+def _coordinate_provenance(record: dict, product) -> dict:
+    context = coordinates.coordinate_context(record)
+    return {
+        **context,
+        "delivered_cutout_geometric_center_icrs_deg": list(product.center_sky) if product.center_sky else None,
+        "delivered_cutout_center_definition": "FITS WCS at ((NAXIS1-1)/2, (NAXIS2-1)/2)",
+        "requested_field_center_pixel": product.metadata.get("requested_position_pixel"),
+        "wavelength_sample_pixel": product.metadata.get("wavelength_sample_pixel"),
+        "wavelength_sample_definition": product.metadata.get("wavelength_sample_note"),
+    }
+
+
+def _candidate_row(candidate, crossmatch: dict | None, gaia_crossmatch: dict | None = None) -> dict:
     match = (crossmatch or {}).get("matches") or []
     first = match[0] if match else {}
+    gaia_matches = (gaia_crossmatch or {}).get("matches") or []
+    gaia_first = gaia_matches[0] if gaia_matches else {}
     return {
         "candidate_id": candidate.candidate_id,
         "classification": candidate.classification,
@@ -303,6 +370,12 @@ def _candidate_row(candidate, crossmatch: dict | None) -> dict:
         "crossmatch_status": (crossmatch or {}).get("status", "not attempted"),
         "crossmatch_source": first.get("designation", ""),
         "crossmatch_separation_arcsec": first.get("separation_arcsec", ""),
+        "gaia_crossmatch_status": (gaia_crossmatch or {}).get("status", "not attempted"),
+        "gaia_source_id": gaia_first.get("source_id", ""),
+        "gaia_separation_arcsec": gaia_first.get("separation_arcsec", ""),
+        "gaia_match_radius_arcsec": gaia_first.get("match_radius_arcsec", ""),
+        "gaia_propagated_ra_deg": gaia_first.get("propagated_ra_deg", ""),
+        "gaia_propagated_dec_deg": gaia_first.get("propagated_dec_deg", ""),
         "data_mode": candidate.data_mode,
         "provenance_run_id": candidate.provenance_run_id,
         "warnings": " | ".join(candidate.warnings),
