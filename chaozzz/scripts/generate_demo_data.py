@@ -1,0 +1,203 @@
+"""Generate clearly labelled synthetic FITS products for the offline fallback demo.
+
+These files are NOT SPHEREx observations. Every header carries
+DATAMODE = 'DEMONSTRATION DATA · SYNTHETIC' and the manifest repeats the notice.
+They exist only so the interface and pipeline can be demonstrated without
+internet access, and so the unit tests have a controlled truth model.
+
+Known ground truth written into the manifest:
+  * MOVER   — a compact source that shifts by 2.5 pixels between epochs
+  * VARIABLE— a compact source that brightens by ~60% between epochs
+  * VANISH  — a source present in epoch 1 and absent in epoch 2
+  * COSMIC  — a 3-pixel cosmic-ray-like streak present only in epoch 2
+"""
+from __future__ import annotations
+
+import json
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+from astropy.io import fits
+from astropy.wcs import WCS
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import config  # noqa: E402
+
+SHAPE = (96, 96)
+PIXEL_SCALE_DEG = 6.14 / 3600.0
+CENTER_RA = 210.80227
+CENTER_DEC = 54.34895
+BACKGROUND = 0.90           # MJy/sr
+NOISE = 0.012               # MJy/sr
+
+SOURCES = {
+    "STAR_A": (28.0, 30.0, 1.10),
+    "STAR_B": (44.0, 52.0, 0.75),
+    "STAR_C": (66.0, 24.0, 0.60),
+    "VARIABLE": (72.0, 68.0, 0.80),
+    "MOVERS": (38.0, 70.0, 1.20),
+    "VANISH": (18.0, 60.0, 0.65),
+}
+
+
+def _wcs() -> WCS:
+    wcs = WCS(naxis=2)
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    wcs.wcs.crval = [CENTER_RA, CENTER_DEC]
+    wcs.wcs.crpix = [SHAPE[1] / 2 + 0.5, SHAPE[0] / 2 + 0.5]
+    wcs.wcs.cdelt = [-PIXEL_SCALE_DEG, PIXEL_SCALE_DEG]
+    wcs.wcs.cunit = ["deg", "deg"]
+    wcs.array_shape = SHAPE
+    return wcs
+
+
+def _add_source(image: np.ndarray, x: float, y: float, amplitude: float) -> None:
+    grid_y, grid_x = np.mgrid[0:SHAPE[0], 0:SHAPE[1]]
+    image += amplitude * np.exp(-(((grid_x - x) ** 2 + (grid_y - y) ** 2) / (2 * 1.1 ** 2)))
+
+
+def _flag_header() -> dict:
+    definitions = [
+        ("00", "TRANSIENT", 1, "Synthetic transient flag"),
+        ("01", "OVERFLOW", 2, "Synthetic overflow flag"),
+        ("02", "NONFUNC", 64, "Synthetic non-functional pixel"),
+        ("03", "SOURCE", 2097152, "Synthetic source flag (informational)"),
+    ]
+    cards = []
+    for index, name, mask, description in definitions:
+        cards.append((f"MSKN{index}", name, description))
+        cards.append((f"MSKM{index}", mask, f"{name} bit mask"))
+        cards.append((f"MSKD{index}", description, description))
+    return cards
+
+
+def _apply_flag_header(header: fits.Header) -> fits.Header:
+    for key, value, comment in _flag_header():
+        header[key] = (value, comment)
+    return header
+
+
+def build_epoch(epoch: int) -> tuple[fits.HDUList, dict]:
+    rng = np.random.default_rng(1000 + epoch)
+    image = np.full(SHAPE, BACKGROUND) + rng.normal(0, NOISE, SHAPE)
+    for name, (x, y, amplitude) in SOURCES.items():
+        if name == "VARIABLE":
+            _add_source(image, x, y, amplitude * (1.6 if epoch == 2 else 1.0))
+        elif name == "MOVERS":
+            # The mover shifts by 2.5 pixels along +x in the second epoch.
+            _add_source(image, x + (2.5 if epoch == 2 else 0.0), y, amplitude)
+        elif name == "VANISH":
+            if epoch == 1:
+                _add_source(image, x, y, amplitude)
+        else:
+            _add_source(image, x, y, amplitude)
+    if epoch == 2:
+        # Cosmic-ray-like streak: a single-epoch artifact.
+        image[80:83, 12] += 2.4
+        # A NONFUNC flagged pixel pair in both epochs.
+    image[10:12, 84:86] = np.nan
+    flags = np.zeros(SHAPE, dtype=np.int32)
+    flags[:, :] = 2097152          # SOURCE informational bit, as in real products
+    flags[10:12, 84:86] = 2097152 | 64   # NONFUNC defect bit
+    # A signal-dependent variance term mimics the photon-noise scaling of real
+    # SPHEREx VARIANCE planes instead of a flat noise floor.
+    variance = NOISE ** 2 + 0.001 * np.clip(np.nan_to_num(image, nan=0.0), 0.0, None)
+    variance[10:12, 84:86] = np.nan
+    zodi = np.full(SHAPE, 0.42)
+    header = _wcs().to_header()
+    header["BUNIT"] = ("MJy / sr", "Synthetic surface brightness units")
+    header["DATE-OBS"] = ("2026-01-01T00:00:00" if epoch == 1 else "2026-02-15T00:00:00", "Synthetic epoch timestamp")
+    header["MJD-OBS"] = (61041.0 if epoch == 1 else 61086.0, "Synthetic epoch MJD")
+    header["BAND"] = "SPHEREx-D2 (synthetic stand-in)"
+    header["DATAMODE"] = ("DEMONSTRATION DATA - SYNTHETIC", "NOT a real SPHEREx observation")
+    header["ORIGIN"] = ("THE CHAOS THEORY demo generator", "")
+    header["EXPTIME"] = (126.0, "Synthetic exposure time")
+    _apply_flag_header(header)
+    primary = fits.PrimaryHDU()
+    primary.header["VERSION"] = ("DEMO-1.0", "Synthetic product version")
+    primary.header["DATAMODE"] = ("DEMONSTRATION DATA - SYNTHETIC", "NOT a real SPHEREx observation")
+    primary.header["NOTICE"] = ("Synthetic data generated by scripts/generate_demo_data.py", "")
+    hdul = fits.HDUList([
+        primary,
+        fits.ImageHDU(image.astype(np.float32), header=header, name="IMAGE"),
+        fits.ImageHDU(flags, header=_apply_flag_header(fits.Header()), name="FLAGS"),
+        fits.ImageHDU(variance.astype(np.float32), name="VARIANCE"),
+        fits.ImageHDU(zodi.astype(np.float32), name="ZODI"),
+        fits.ImageHDU(np.zeros((11, 7), dtype=np.float32), name="EPSF"),
+    ])
+    truth = {
+        "epoch": epoch,
+        "date_utc": "2026-01-01T00:00:00" if epoch == 1 else "2026-02-15T00:00:00",
+        "mjd": 61041.0 if epoch == 1 else 61086.0,
+    }
+    return hdul, truth
+
+
+def main() -> None:
+    config.DEMO_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    entries = []
+    for epoch in (1, 2):
+        hdul, truth = build_epoch(epoch)
+        path = config.DEMO_DATA_DIR / f"demo_epoch{epoch}_synthetic.fits"
+        hdul.writeto(path, overwrite=True)
+        entries.append({
+            "role": f"epoch {epoch}",
+            "cached_path": str(path.relative_to(ROOT)),
+            "file_size_bytes": path.stat().st_size,
+            "id": f"DEMO-EPOCH{epoch}",
+            "label": f"DEMO epoch {epoch} · synthetic · {truth['date_utc'][:10]}",
+            "origin": "Synthetic product generated by scripts/generate_demo_data.py (not an observation)",
+            "data_mode": config.DATA_MODES["DEMO"],
+            "ra_deg": CENTER_RA,
+            "dec_deg": CENTER_DEC,
+            "date_utc": truth["date_utc"],
+            "mjd": truth["mjd"],
+            "band": "SPHEREx-D2 (synthetic stand-in)",
+            "release": "demo",
+            "obs_id": f"DEMO-EPOCH{epoch}",
+            "cutout_url": "",
+            "full_fits_url": "",
+            "calibration_level": None,
+            "quality_flag": "synthetic",
+            "provenance_version": "DEMO-1.0",
+            "exposure_s": 126.0,
+            "product_type": "synthetic image",
+            "content_type": "image/fits",
+            "plane_id": "",
+            "is_real_spherex": False,
+            "is_demo": True,
+            "central_wavelength_um": None,
+            "central_bandwidth_um": None,
+            "coordinates_source": "synthetic WCS image centre",
+            "metadata": {"synthetic": True},
+            "warnings": [
+                "DEMONSTRATION DATA: this file is synthetic and must never be presented as a SPHEREx observation.",
+                "No WCS-WAVE table is present, so spectral compatibility cannot be verified.",
+            ],
+        })
+    manifest = {
+        "dataset": "THE CHAOS THEORY synthetic demonstration pair",
+        "data_mode": config.DATA_MODES["DEMO"],
+        "generated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "notice": "DEMONSTRATION DATA — synthetic products generated locally. These are not NASA SPHEREx observations.",
+        "truth_model": {
+            "mover": "Source 'MOVERS' at pixel (38, 70) shifts by 2.5 pixels between epochs.",
+            "variable": "Source 'VARIABLE' at pixel (72, 68) brightens by 60% between epochs.",
+            "vanish": "Source 'VANISH' at pixel (18, 60) is present only in epoch 1.",
+            "artifact": "A 3-pixel streak at x=12, y=80–82 exists only in epoch 2.",
+            "masked": "A 2×2 NaN/NONFUNC patch at x=84–85, y=10–11 exists in both epochs.",
+            "expectation": "The pipeline should recover several residuals but must not be used to claim a real detection.",
+        },
+        "observations": entries,
+    }
+    (config.DEMO_DATA_DIR / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    print(f"Wrote {len(entries)} synthetic files to {config.DEMO_DATA_DIR}")
+    print(manifest["notice"])
+
+
+if __name__ == "__main__":
+    main()

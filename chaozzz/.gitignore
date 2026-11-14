@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Derived / downloaded astronomical data (never commit FITS)
+data/cache/
+data/uploads/
+data/real/*.fits
+data/demo/*.fits
+!data/demo/demo_epoch1_synthetic.fits
+!data/demo/demo_epoch2_synthetic.fits
+outputs/runs/
+outputs/candidates/
+outputs/*.log
+outputs/events.jsonl
+
+# OS
+.DS_Store

@@ -1,0 +1,214 @@
+{
+  "attribution": {
+    "archive": "NASA/IPAC Infrared Science Archive (IRSA), Caltech/IPAC",
+    "mission": "NASA SPHEREx",
+    "note": "Cutouts retrieved from the official IRSA cutout service. This project is not an official NASA product."
+  },
+  "coverage_endpoint": "https://irsa.ipac.caltech.edu/SIA",
+  "data_mode": "REAL SPHEREx \u00b7 CACHED IRSA CUTOUTS",
+  "dataset": "THE CHAOS THEORY verified real SPHEREx cutout pair",
+  "generated_utc": "2026-11-13T09:43:48+00:00",
+  "integrity_note": "Re-verify checksums with 'python3 scripts/build_demo_bundle.py --check' before a demonstration.",
+  "observations": [
+    {
+      "band": "SPHEREx-D2",
+      "cached_path": "data/real/495d8688953ba51f80530bdb.fits",
+      "calibration_level": 2,
+      "central_bandwidth_um": null,
+      "central_wavelength_um": null,
+      "cloud_access": "{\"aws\": {\"bucket_name\": \"nasa-irsa-spherex\"",
+      "content_length": 65208960,
+      "content_type": "image/fits",
+      "contentchecksum": "md5:f5489b9ff05f12e5b6354d96a1960b48",
+      "coordinates_source": "SIA2 s_ra/s_dec (observation footprint centre)",
+      "cutout_url": "https://irsa.ipac.caltech.edu/ibe/data/spherex/qr3/level2/2026W20_2A/l2b-v27-2026-267/2/level2_2026W20_2A_0464_1D2_spx_l2b-v27-2026-267.fits?center=210.80227000,54.34895000d&size=0.10000",
+      "data_mode": "LIVE IRSA SPHEREx",
+      "date_utc": "2026-05-17T10:53:45",
+      "dec_deg": 52.949063876024745,
+      "derived_sha256": "614a67e5f0d4695e70b05a74b113bd8235350b9b203e7660ce1b808c278ffa59",
+      "detector": "2",
+      "download_url": "https://irsa.ipac.caltech.edu/ibe/data/spherex/qr3/level2/2026W20_2A/l2b-v27-2026-267/2/level2_2026W20_2A_0464_1D2_spx_l2b-v27-2026-267.fits?center=210.80227000,54.34895000d&size=0.10000",
+      "energy_bounds_lower_m": 1.1033e-06,
+      "energy_bounds_upper_m": 1.6499e-06,
+      "exposure_s": 113.5826,
+      "file_size_bytes": 4000320,
+      "full_fits_url": "https://irsa.ipac.caltech.edu/ibe/data/spherex/qr3/level2/2026W20_2A/l2b-v27-2026-267/2/level2_2026W20_2A_0464_1D2_spx_l2b-v27-2026-267.fits",
+      "id": "SPX-F3DA06993359",
+      "ipac_pub_date": "2026-10-15 10:23:52.115784-07",
+      "is_demo": false,
+      "is_real_spherex": true,
+      "label": "2026-05-17 \u00b7 SPHEREx-D2 \u00b7 2026W20_2A_0464_1",
+      "measured": {
+        "bunit": "MJy / sr",
+        "center_bandwidth_um": 0.034222002527348895,
+        "center_wavelength_um": 1.4201994425388356,
+        "cutout_center_sky": [
+          210.80134694873317,
+          54.34855966108791
+        ],
+        "extension_names": [
+          "PRIMARY",
+          "IMAGE",
+          "FLAGS",
+          "VARIANCE",
+          "ZODI",
+          "EPSF",
+          "WCS-WAVE"
+        ],
+        "pixel_scale_arcsec": 6.139117140771903,
+        "primary_version": "7.0.5",
+        "severe_flag_fraction": 0.01120367710428038,
+        "shape": [
+          59,
+          59
+        ],
+        "source_flag_fraction": 0.9959781671933352,
+        "wavelength_sample_pixel": [
+          29.0,
+          29.0
+        ]
+      },
+      "metrics_background": null,
+      "metrics_backgroundstddev": null,
+      "mjd": 61177.453996,
+      "obs_collection": "spherex_qr3",
+      "obs_id": "2026W20_2A_0464_1",
+      "obs_publisher_did": "ivo://irsa.ipac/spherex_qr3?2026W20_2A_0464_1/D2",
+      "origin": "NASA/IPAC IRSA \u00b7 SPHEREx TAP",
+      "plane_id": "01a0d516-8e15-7357-998f-e37fda5d9523",
+      "position_resolution_arcsec": 3.075,
+      "position_samplesize_arcsec": 6.15,
+      "product_type": "science",
+      "provenance_version": "7.0.5",
+      "quality_flag": "",
+      "ra_deg": 212.45050299637245,
+      "release": "qr3",
+      "retrieved_utc": "2026-11-13T09:43:47+00:00",
+      "role": "epoch 1",
+      "s_fov_deg": 3.485,
+      "s_pixel_scale_arcsec": 6.15,
+      "s_region": "POLYGON ICRS 212.22754312758093 55.39171607558071 216.51058793310582 53.00041463721909 212.63356411207238 50.47445380669159 208.363692186113 52.745648992416676 212.22754312758093 55.39171607558071",
+      "tap_endpoint": "https://irsa.ipac.caltech.edu/TAP/sync",
+      "warnings": [
+        "Archive quality_flag was not supplied for this plane."
+      ],
+      "wavelength_range_um": [
+        1.1033,
+        1.6499
+      ]
+    },
+    {
+      "band": "SPHEREx-D2",
+      "cached_path": "data/real/e171474e2ab87bfe8c522a3e.fits",
+      "calibration_level": 2,
+      "central_bandwidth_um": null,
+      "central_wavelength_um": null,
+      "content_length": 64883520,
+      "content_type": "image/fits",
+      "contentchecksum": "md5:423e7bccee9417d7d61caf2ef8369bf6",
+      "coordinates_source": "requested field centre (no SIA2 footprint match)",
+      "cutout_url": "https://irsa.ipac.caltech.edu/ibe/data/spherex/qr3/level2/2026W26_1A/l2b-v27-2026-273/2/level2_2026W26_1A_0178_1D2_spx_l2b-v27-2026-273.fits?center=210.80227000,54.34895000d&size=0.10000",
+      "data_mode": "LIVE IRSA SPHEREx",
+      "date_utc": "2026-06-22T20:21:33",
+      "dec_deg": 54.34895,
+      "derived_sha256": "b5d23c2dd6ffde97237a11076ef3f90850a19fc2978b64e5a4f1433a86b7e8da",
+      "detector": "2",
+      "download_url": "https://irsa.ipac.caltech.edu/ibe/data/spherex/qr3/level2/2026W26_1A/l2b-v27-2026-273/2/level2_2026W26_1A_0178_1D2_spx_l2b-v27-2026-273.fits?center=210.80227000,54.34895000d&size=0.10000",
+      "energy_bounds_lower_m": 1.1033e-06,
+      "energy_bounds_upper_m": 1.6499e-06,
+      "exposure_s": 113.5826,
+      "file_size_bytes": 4000320,
+      "full_fits_url": "https://irsa.ipac.caltech.edu/ibe/data/spherex/qr3/level2/2026W26_1A/l2b-v27-2026-273/2/level2_2026W26_1A_0178_1D2_spx_l2b-v27-2026-273.fits",
+      "id": "SPX-312D858D5C6C",
+      "ipac_pub_date": "2026-10-15 10:38:57.658976-07",
+      "is_demo": false,
+      "is_real_spherex": true,
+      "label": "2026-06-22 \u00b7 SPHEREx-D2 \u00b7 2026W26_1A_0178_1",
+      "measured": {
+        "bunit": "MJy / sr",
+        "center_bandwidth_um": 0.034232440899258365,
+        "center_wavelength_um": 1.420580919587076,
+        "cutout_center_sky": [
+          210.8017219527694,
+          54.34846033837643
+        ],
+        "extension_names": [
+          "PRIMARY",
+          "IMAGE",
+          "FLAGS",
+          "VARIANCE",
+          "ZODI",
+          "EPSF",
+          "WCS-WAVE"
+        ],
+        "pixel_scale_arcsec": 6.13920339317376,
+        "primary_version": "7.0.5",
+        "severe_flag_fraction": 0.006607296753806378,
+        "shape": [
+          59,
+          59
+        ],
+        "source_flag_fraction": 0.9962654409652398,
+        "wavelength_sample_pixel": [
+          29.0,
+          29.0
+        ]
+      },
+      "metrics_background": null,
+      "metrics_backgroundstddev": null,
+      "mjd": 61213.848301,
+      "obs_id": "2026W26_1A_0178_1",
+      "obs_publisher_did": "ivo://irsa.ipac/spherex_qr3?2026W26_1A_0178_1/D2",
+      "origin": "NASA/IPAC IRSA \u00b7 SPHEREx TAP",
+      "plane_id": "01a0f500-654a-7b7b-aeab-0a80e0d45a15",
+      "position_resolution_arcsec": 3.075,
+      "position_samplesize_arcsec": 6.15,
+      "product_type": "science",
+      "provenance_version": "7.0.5",
+      "quality_flag": "",
+      "ra_deg": 210.80227,
+      "release": "qr3",
+      "retrieved_utc": "2026-11-13T09:43:48+00:00",
+      "role": "epoch 2",
+      "tap_endpoint": "https://irsa.ipac.caltech.edu/TAP/sync",
+      "warnings": [
+        "Archive quality_flag was not supplied for this plane.",
+        "No SIA2 footprint match; coordinates are the requested field centre, not the observation centre."
+      ],
+      "wavelength_range_um": [
+        1.1033,
+        1.6499
+      ]
+    }
+  ],
+  "query": {
+    "band": "SPHEREx-D2",
+    "dec_deg": 54.34895,
+    "end_date": "2026-06-30",
+    "max_rows": 120,
+    "ra_deg": 210.80227,
+    "radius_deg": 0.05,
+    "release": "all",
+    "size_deg": 0.1,
+    "start_date": "2026-05-01",
+    "survey": "wide"
+  },
+  "software_versions": {
+    "app": "1.0.0-hackathon",
+    "astropy": "8.0.2",
+    "astroquery": "0.4.11",
+    "matplotlib": "3.11.2",
+    "numpy": "2.3.5",
+    "pandas": "2.2.3",
+    "photutils": "3.1.1",
+    "plotly": "6.0.1",
+    "python": "3.13.18",
+    "pyvo": "1.10.0",
+    "reproject": "0.21.0",
+    "requests": "2.33.0",
+    "scipy": "1.17.1",
+    "streamlit": "1.67.0"
+  },
+  "tap_endpoint": "https://irsa.ipac.caltech.edu/TAP/sync",
+  "tap_query": "SELECT TOP 120\n    'https://irsa.ipac.caltech.edu/' || a.uri || '?center=210.80227000,54.34895000d&size=0.10000' AS uri,\n    a.uri AS raw_uri,\n    p.time_bounds_lower, p.time_bounds_upper, p.time_exposure,\n    p.energy_bandpassname, p.energy_bounds_lower, p.energy_bounds_upper,\n    p.calibrationlevel, p.quality_flag, p.provenance_version, p.productid,\n    p.obsid, p.planeid, p.obs_publisher_did, p.position_resolution,\n    p.position_samplesize, p.metrics_background, p.metrics_backgroundstddev,\n    a.contentlength, a.producttype, a.contenttype, a.contentchecksum,\n    a.ipac_pub_date, a.lastmodified\nFROM spherex.artifact a\nJOIN spherex.plane p ON a.planeid = p.planeid\nWHERE 1 = CONTAINS(POINT('ICRS', 210.80227000, 54.34895000), p.poly)\n        AND p.time_bounds_lower >= 61161.000000\n        AND p.time_bounds_lower < 61222.000000\n        AND a.producttype = 'science'\n        AND a.contenttype = 'image/fits'\n        AND p.energy_bandpassname = 'SPHEREx-D2'\nORDER BY p.time_bounds_lower"
+}

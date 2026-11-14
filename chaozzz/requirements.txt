@@ -1,0 +1,12 @@
+streamlit>=1.40,<2
+numpy>=1.26
+astropy>=6.0
+astroquery>=0.4.7
+pyvo>=1.5
+photutils>=1.10
+reproject>=0.13
+pandas>=2.0
+plotly>=5.20
+matplotlib>=3.8
+requests>=2.31
+pytest>=8.0

@@ -1,0 +1,20 @@
+[theme]
+base = "dark"
+primaryColor = "#22D3EE"
+backgroundColor = "#030712"
+secondaryBackgroundColor = "#091122"
+textColor = "#E6EDF7"
+font = "sans serif"
+
+[client]
+showSidebarNavigation = false
+toolbarMode = "minimal"
+
+[server]
+enableStaticServing = true
+maxUploadSize = 200
+fileWatcherType = "poll"
+headless = true
+
+[browser]
+gatherUsageStats = false
